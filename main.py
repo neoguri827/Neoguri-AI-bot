@@ -3,7 +3,7 @@ import time
 import sqlite3
 import logging
 import threading
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from contextlib import closing
 
@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================================================================
-# 헬스체크 서버 (Render 슬립 방지/상태 확인용, 전체 봇 공용 1개)
+# 헬스체크 서버
 # ==================================================================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -58,8 +58,26 @@ if not GEMINI_API_KEY:
 
 _client = genai.Client(api_key=GEMINI_API_KEY)
 
+TELEGRAM_MAX_LEN = 4000
+
+def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        split_at = remaining.rfind('\n', 0, limit)
+        if split_at <= 0:
+            split_at = limit
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    return chunks
+
 # ==================================================================
-# Gemini 라우터: 사용 가능한 모델을 자동으로 찾고, 실패 시 재시도까지 처리
+# Gemini 라우터: 모델 자동 선택 + 재시도
 # ==================================================================
 class GeminiRouter:
     PREFERRED_MODELS = [
@@ -100,8 +118,8 @@ class GeminiRouter:
                     time.sleep(wait)
         raise last_err
 
-    def create_chat(self, history=None):
-        return self.client.chats.create(model=self.model_name, history=history or [])
+    def create_chat(self, history=None, config=None):
+        return self.client.chats.create(model=self.model_name, config=config, history=history or [])
 
 
 router = GeminiRouter(_client)
@@ -161,8 +179,7 @@ class ChatHistoryStore:
             conn.commit()
 
 # ==================================================================
-# 1) 번역봇 (너구리_영어 / 중국 / 인도네시아)
-#    - 정확한 번역만 출력, 잡담/이모지/코멘트 일체 금지, 최대 존댓말·격식체
+# 1) 번역봇 (너구리_영어 / 중국 / 인도네시아) - 변경 없음
 # ==================================================================
 TRANSLATOR_BOT_DEFS = [
     {
@@ -247,8 +264,23 @@ class NeoguriTranslatorBot:
 
 
 # ==================================================================
-# 2) 스마트 개인비서 봇 (똑똑한 너구리) - 대화 기억 있음
+# 2) 스마트 개인비서 봇 (똑똑한 너구리) - 대폭 업그레이드
 # ==================================================================
+SMART_BOT_INSTRUCTION = (
+    "너는 '너구리'라는 이름의 유능한 개인 비서다. 사용자의 업무, 재무, 학습, 일상 질문을 폭넓게 돕는다.\n"
+    "- 복잡하거나 계산이 필요한 질문은 단계적으로 사고 과정을 거쳐 정확하게 검산한 뒤 답하라.\n"
+    "- 최신 정보(뉴스, 환율, 날씨, 주가 등)가 필요한 질문은 검색 도구를 활용해 실제 최신 사실에 근거해 답하라.\n"
+    "- 질문이 모호하면 답을 짐작하지 말고 먼저 되물어서 명확히 하라.\n"
+    "- 파일(엑셀, PDF, 이미지 등)이 첨부되면 내용을 꼼꼼히 분석해 핵심을 정리하고, "
+    "이상하거나 비정상적인 값이 있으면 짚어줘라.\n"
+    "- 답변은 불필요하게 장황하지 않게, 필요하면 표나 목록을 사용해 간결하고 실용적으로 작성하라."
+)
+
+SMART_BOT_CONFIG = types.GenerateContentConfig(
+    system_instruction=SMART_BOT_INSTRUCTION,
+    tools=[types.Tool(google_search=types.GoogleSearch())],
+)
+
 class SmartGeminiBot:
     def __init__(self, token: str, store: ChatHistoryStore):
         self.bot = telebot.TeleBot(token)
@@ -262,21 +294,47 @@ class SmartGeminiBot:
     def _get_chat_session(self, chat_id: int):
         if chat_id not in self.user_sessions:
             history = self._history_to_genai_format(self.store.load_history(chat_id))
-            self.user_sessions[chat_id] = router.create_chat(history=history)
+            self.user_sessions[chat_id] = router.create_chat(history=history, config=SMART_BOT_CONFIG)
             logger.info(f"[똑똑한 너구리] 세션 생성/복원: Chat ID {chat_id} (기록 {len(history)}건)")
         return self.user_sessions[chat_id]
+
+    def _send_with_retry(self, chat_session, content: Union[str, list], retries: int = 2):
+        last_err = None
+        for attempt in range(retries + 1):
+            try:
+                return chat_session.send_message(content)
+            except Exception as e:
+                last_err = e
+                if attempt < retries:
+                    wait = 1.5 * (attempt + 1)
+                    logger.warning(f"[똑똑한 너구리] 응답 실패, {wait:.1f}초 후 재시도: {e}")
+                    time.sleep(wait)
+        raise last_err
+
+    def _reply(self, chat_id: int, text: str):
+        for chunk in split_message(text):
+            try:
+                self.bot.send_message(chat_id, chunk, parse_mode='Markdown')
+            except Exception:
+                self.bot.send_message(chat_id, chunk)
 
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
         def handle_myid(message: Message):
             self.bot.send_message(message.chat.id, f"🆔 chat_id: `{message.chat.id}`", parse_mode='Markdown')
 
+        @self.bot.message_handler(commands=['model'])
+        def handle_model(message: Message):
+            self.bot.send_message(message.chat.id, f"🧠 현재 사용 중인 모델: `{router.model_name}`", parse_mode='Markdown')
+
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
             self.bot.send_message(
                 message.chat.id,
                 "사용법: 궁금한 걸 물어보면 이전 대화를 기억하며 답합니다.\n"
+                "최신 정보가 필요한 질문은 검색해서 답하고, 엑셀/PDF/사진을 보내면 분석해줍니다.\n"
                 "/reset - 대화 기록 초기화\n"
+                "/model - 현재 사용 모델 확인\n"
                 "/myid - 내 chat_id 확인\n"
                 "/help - 이 도움말 보기"
             )
@@ -291,7 +349,9 @@ class SmartGeminiBot:
             if command == '/start':
                 self.bot.send_message(
                     chat_id,
-                    "🚀 *똑똑한 너구리 가동*\n\n이전 대화 문맥을 기억합니다.\n"
+                    "🚀 *똑똑한 너구리 가동*\n\n"
+                    "이전 대화 문맥을 기억하고, 최신 정보는 검색해서 답합니다.\n"
+                    "엑셀·PDF·사진을 보내면 분석도 해드립니다.\n"
                     "새 주제로 시작하려면 `/reset`을 입력하세요.",
                     parse_mode='Markdown'
                 )
@@ -315,34 +375,50 @@ class SmartGeminiBot:
 
                 self.store.append(chat_id, "user", user_input)
                 self.store.append(chat_id, "model", reply_text)
-
-                try:
-                    self.bot.send_message(chat_id, reply_text, parse_mode='Markdown')
-                except Exception:
-                    self.bot.send_message(chat_id, reply_text)
+                self._reply(chat_id, reply_text)
             except Exception as e:
                 logger.error(f"[똑똑한 너구리] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
                 self.bot.send_message(chat_id, "⚠️ 오류가 발생했습니다. 잠시 후 다시 시도하거나 `/reset`을 입력해 주세요.")
 
-    def _send_with_retry(self, chat_session, text: str, retries: int = 2):
-        last_err = None
-        for attempt in range(retries + 1):
+        @self.bot.message_handler(content_types=['document', 'photo'])
+        def handle_file(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            self.bot.send_chat_action(chat_id, 'typing')
             try:
-                return chat_session.send_message(text)
+                if message.content_type == 'document':
+                    file_id = message.document.file_id
+                    mime_type = message.document.mime_type or "application/octet-stream"
+                else:
+                    file_id = message.photo[-1].file_id
+                    mime_type = "image/jpeg"
+
+                file_info = self.bot.get_file(file_id)
+                file_bytes = self.bot.download_file(file_info.file_path)
+                caption = message.caption or "이 파일의 내용을 분석하고 핵심을 요약해줘."
+
+                chat_session = self._get_chat_session(chat_id)
+                response = self._send_with_retry(
+                    chat_session,
+                    [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), caption]
+                )
+                reply_text = response.text
+
+                self.store.append(chat_id, "user", f"[파일 첨부] {caption}")
+                self.store.append(chat_id, "model", reply_text)
+                self._reply(chat_id, reply_text)
             except Exception as e:
-                last_err = e
-                if attempt < retries:
-                    wait = 1.5 * (attempt + 1)
-                    logger.warning(f"[똑똑한 너구리] 응답 실패, {wait:.1f}초 후 재시도: {e}")
-                    time.sleep(wait)
-        raise last_err
+                logger.error(f"[똑똑한 너구리] 파일 처리 예외 (Chat ID: {chat_id}): {e}", exc_info=True)
+                self.bot.send_message(chat_id, "⚠️ 파일 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
 
     def run(self):
         self.bot.infinity_polling(timeout=10, long_polling_timeout=5)
 
 
 # ==================================================================
-# 실행: 폴링이 죽어도 자동으로 재시작하는 래퍼
+# 실행: 폴링이 죽어도 자동으로 재시작
 # ==================================================================
 def run_forever(bot_obj, name: str):
     while True:
