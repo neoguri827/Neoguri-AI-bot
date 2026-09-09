@@ -77,7 +77,7 @@ def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
     return chunks
 
 # ==================================================================
-# Gemini 라우터: 모델 자동 선택 + 재시도
+# Gemini 라우터: 모델 자동 선택 + 재시도 + 할당량 초과 시 자동 모델 전환
 # ==================================================================
 class GeminiRouter:
     PREFERRED_MODELS = [
@@ -103,18 +103,39 @@ class GeminiRouter:
             "사용 가능한 Gemini 모델이 하나도 없습니다. GEMINI_API_KEY가 유효한지 확인하세요."
         )
 
-    def generate(self, contents, config=None, retries: int = 2):
+    @staticmethod
+    def is_quota_error(e: Exception) -> bool:
+        msg = str(e)
+        return "RESOURCE_EXHAUSTED" in msg or "429" in msg
+
+    def advance_model(self) -> bool:
+        """현재 모델이 할당량 초과일 때 다음 후보 모델로 전환. 더 없으면 False."""
+        try:
+            idx = self.PREFERRED_MODELS.index(self.model_name)
+        except ValueError:
+            idx = -1
+        if idx + 1 < len(self.PREFERRED_MODELS):
+            self.model_name = self.PREFERRED_MODELS[idx + 1]
+            logger.warning(f"할당량 초과로 모델 전환 → {self.model_name}")
+            return True
+        return False
+
+    def generate(self, contents, config=None, retries: int = None):
+        retries = len(self.PREFERRED_MODELS) if retries is None else retries
         last_err = None
-        for attempt in range(retries + 1):
+        for attempt in range(retries):
             try:
                 return self.client.models.generate_content(
                     model=self.model_name, contents=contents, config=config
                 )
             except Exception as e:
                 last_err = e
-                if attempt < retries:
+                if self.is_quota_error(e):
+                    if not self.advance_model():
+                        break
+                else:
                     wait = 1.5 * (attempt + 1)
-                    logger.warning(f"Gemini 호출 실패, {wait:.1f}초 후 재시도({attempt+1}/{retries}): {e}")
+                    logger.warning(f"Gemini 호출 실패, {wait:.1f}초 후 재시도: {e}")
                     time.sleep(wait)
         raise last_err
 
@@ -125,7 +146,7 @@ class GeminiRouter:
 router = GeminiRouter(_client)
 
 # ==================================================================
-# 대화 기록 저장소 (스마트 비서 봇 전용, 사용자별 최근 200개만 보관)
+# 대화 기록 저장소
 # ==================================================================
 DB_PATH = os.environ.get("DB_PATH", "chat_history.db")
 
@@ -179,7 +200,7 @@ class ChatHistoryStore:
             conn.commit()
 
 # ==================================================================
-# 1) 번역봇 (너구리_영어 / 중국 / 인도네시아) - 변경 없음
+# 1) 번역봇 - 변경 없음 (router.generate가 내부적으로 할당량 전환 처리)
 # ==================================================================
 TRANSLATOR_BOT_DEFS = [
     {
@@ -264,19 +285,21 @@ class NeoguriTranslatorBot:
 
 
 # ==================================================================
-# 2) 스마트 개인비서 봇 (똑똑한 너구리) - 대폭 업그레이드
+# 2) 스마트 개인비서 봇 (똑똑한 너구리)
+#    - 검색 기능은 기본 OFF, /search on 으로 켤 수 있음
+#    - 할당량 초과 시 자동으로 모델 전환 후 세션 재구성
 # ==================================================================
 SMART_BOT_INSTRUCTION = (
     "너는 '너구리'라는 이름의 유능한 개인 비서다. 사용자의 업무, 재무, 학습, 일상 질문을 폭넓게 돕는다.\n"
     "- 복잡하거나 계산이 필요한 질문은 단계적으로 사고 과정을 거쳐 정확하게 검산한 뒤 답하라.\n"
-    "- 최신 정보(뉴스, 환율, 날씨, 주가 등)가 필요한 질문은 검색 도구를 활용해 실제 최신 사실에 근거해 답하라.\n"
     "- 질문이 모호하면 답을 짐작하지 말고 먼저 되물어서 명확히 하라.\n"
     "- 파일(엑셀, PDF, 이미지 등)이 첨부되면 내용을 꼼꼼히 분석해 핵심을 정리하고, "
     "이상하거나 비정상적인 값이 있으면 짚어줘라.\n"
     "- 답변은 불필요하게 장황하지 않게, 필요하면 표나 목록을 사용해 간결하고 실용적으로 작성하라."
 )
 
-SMART_BOT_CONFIG = types.GenerateContentConfig(
+SMART_BOT_CONFIG_BASE = types.GenerateContentConfig(system_instruction=SMART_BOT_INSTRUCTION)
+SMART_BOT_CONFIG_SEARCH = types.GenerateContentConfig(
     system_instruction=SMART_BOT_INSTRUCTION,
     tools=[types.Tool(google_search=types.GoogleSearch())],
 )
@@ -286,6 +309,7 @@ class SmartGeminiBot:
         self.bot = telebot.TeleBot(token)
         self.store = store
         self.user_sessions: Dict[int, Any] = {}
+        self.search_enabled: Dict[int, bool] = {}
         self._register_handlers()
 
     def _history_to_genai_format(self, rows: List[Dict[str, str]]) -> List[types.Content]:
@@ -294,18 +318,31 @@ class SmartGeminiBot:
     def _get_chat_session(self, chat_id: int):
         if chat_id not in self.user_sessions:
             history = self._history_to_genai_format(self.store.load_history(chat_id))
-            self.user_sessions[chat_id] = router.create_chat(history=history, config=SMART_BOT_CONFIG)
-            logger.info(f"[똑똑한 너구리] 세션 생성/복원: Chat ID {chat_id} (기록 {len(history)}건)")
+            search_on = self.search_enabled.get(chat_id, False)
+            config = SMART_BOT_CONFIG_SEARCH if search_on else SMART_BOT_CONFIG_BASE
+            self.user_sessions[chat_id] = router.create_chat(history=history, config=config)
+            logger.info(
+                f"[똑똑한 너구리] 세션 생성/복원: Chat ID {chat_id} "
+                f"(기록 {len(history)}건, 검색={'ON' if search_on else 'OFF'}, 모델={router.model_name})"
+            )
         return self.user_sessions[chat_id]
 
-    def _send_with_retry(self, chat_session, content: Union[str, list], retries: int = 2):
+    def _send_with_retry(self, chat_id: int, content: Union[str, list], retries: int = None):
+        retries = len(router.PREFERRED_MODELS) if retries is None else retries
         last_err = None
-        for attempt in range(retries + 1):
+        for attempt in range(retries):
+            chat_session = self._get_chat_session(chat_id)
             try:
                 return chat_session.send_message(content)
             except Exception as e:
                 last_err = e
-                if attempt < retries:
+                if router.is_quota_error(e):
+                    if router.advance_model():
+                        self.user_sessions.pop(chat_id, None)  # 새 모델로 세션 재생성
+                        continue
+                    else:
+                        break
+                else:
                     wait = 1.5 * (attempt + 1)
                     logger.warning(f"[똑똑한 너구리] 응답 실패, {wait:.1f}초 후 재시도: {e}")
                     time.sleep(wait)
@@ -327,12 +364,29 @@ class SmartGeminiBot:
         def handle_model(message: Message):
             self.bot.send_message(message.chat.id, f"🧠 현재 사용 중인 모델: `{router.model_name}`", parse_mode='Markdown')
 
+        @self.bot.message_handler(commands=['search'])
+        def handle_search_toggle(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            parts = message.text.split()
+            if len(parts) < 2 or parts[1].lower() not in ('on', 'off'):
+                current = "켜짐" if self.search_enabled.get(chat_id, False) else "꺼짐"
+                self.bot.send_message(chat_id, f"현재 검색 기능: {current}\n사용법: /search on 또는 /search off")
+                return
+            enable = parts[1].lower() == 'on'
+            self.search_enabled[chat_id] = enable
+            self.user_sessions.pop(chat_id, None)
+            self.bot.send_message(chat_id, f"🔍 검색 기능을 {'켰습니다' if enable else '껐습니다'}.")
+
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
             self.bot.send_message(
                 message.chat.id,
                 "사용법: 궁금한 걸 물어보면 이전 대화를 기억하며 답합니다.\n"
-                "최신 정보가 필요한 질문은 검색해서 답하고, 엑셀/PDF/사진을 보내면 분석해줍니다.\n"
+                "엑셀/PDF/사진을 보내면 분석해줍니다.\n"
+                "/search on|off - 최신 정보 검색 기능 켜기/끄기 (기본 꺼짐)\n"
                 "/reset - 대화 기록 초기화\n"
                 "/model - 현재 사용 모델 확인\n"
                 "/myid - 내 chat_id 확인\n"
@@ -350,8 +404,8 @@ class SmartGeminiBot:
                 self.bot.send_message(
                     chat_id,
                     "🚀 *똑똑한 너구리 가동*\n\n"
-                    "이전 대화 문맥을 기억하고, 최신 정보는 검색해서 답합니다.\n"
-                    "엑셀·PDF·사진을 보내면 분석도 해드립니다.\n"
+                    "이전 대화 문맥을 기억합니다. 엑셀·PDF·사진을 보내면 분석도 해드립니다.\n"
+                    "최신 정보 검색이 필요하면 `/search on`으로 켜세요 (평소엔 꺼두는 걸 추천).\n"
                     "새 주제로 시작하려면 `/reset`을 입력하세요.",
                     parse_mode='Markdown'
                 )
@@ -369,8 +423,7 @@ class SmartGeminiBot:
             user_input = message.text
             self.bot.send_chat_action(chat_id, 'typing')
             try:
-                chat_session = self._get_chat_session(chat_id)
-                response = self._send_with_retry(chat_session, user_input)
+                response = self._send_with_retry(chat_id, user_input)
                 reply_text = response.text
 
                 self.store.append(chat_id, "user", user_input)
@@ -399,9 +452,8 @@ class SmartGeminiBot:
                 file_bytes = self.bot.download_file(file_info.file_path)
                 caption = message.caption or "이 파일의 내용을 분석하고 핵심을 요약해줘."
 
-                chat_session = self._get_chat_session(chat_id)
                 response = self._send_with_retry(
-                    chat_session,
+                    chat_id,
                     [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), caption]
                 )
                 reply_text = response.text
