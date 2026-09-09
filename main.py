@@ -77,11 +77,11 @@ def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
     return chunks
 
 # ==================================================================
-# Gemini 라우터: 모델 자동 선택(사전 테스트 없이 낙관적 시작) + 재시도 +
-#                할당량 초과/모델 미지원 시 자동 모델 전환
+# Gemini 라우터: 실시간으로 사용 가능한 모델 목록을 조회해서 자동 설정 +
+#                재시도 + 할당량 초과/모델 미지원 시 자동 모델 전환
 # ==================================================================
 class GeminiRouter:
-    PREFERRED_MODELS = [
+    FALLBACK_MODELS = [
         "gemini-3-flash-preview",
         "gemini-2.5-flash",
         "gemini-2.0-flash",
@@ -90,9 +90,41 @@ class GeminiRouter:
 
     def __init__(self, client: genai.Client):
         self.client = client
-        # 재배포 시 할당량을 낭비하지 않도록, 사전 테스트 없이 1순위 모델을 우선 채택
-        self.model_name = self.PREFERRED_MODELS[0]
-        logger.info(f"사용할 Gemini 모델(미검증, 1순위): {self.model_name}")
+        self.models = self._discover_models() or list(self.FALLBACK_MODELS)
+        self.model_index = 0
+        self.model_name = self.models[0]
+        logger.info(f"사용 가능한 모델 {len(self.models)}개 확인, 1순위로 시작: {self.model_name}")
+
+    def _discover_models(self) -> List[str]:
+        try:
+            raw_models = list(self.client.models.list())
+        except Exception as e:
+            logger.warning(f"모델 목록 조회 실패, 기본 후보 목록 사용: {e}")
+            return []
+
+        usable = []
+        for m in raw_models:
+            name = getattr(m, "name", None)
+            if not name:
+                continue
+            short_name = name.split("/")[-1]
+            supported = (
+                getattr(m, "supported_actions", None)
+                or getattr(m, "supported_generation_methods", None)
+                or []
+            )
+            if supported and not any("generatecontent" in str(s).lower() for s in supported):
+                continue
+            usable.append(short_name)
+
+        if not usable:
+            return []
+
+        flash_first = [c for c in usable if "flash" in c.lower()]
+        others = [c for c in usable if c not in flash_first]
+        ordered = flash_first + others
+        logger.info(f"실시간 조회된 사용 가능 모델(우선순위 정렬): {ordered[:6]}{'...' if len(ordered) > 6 else ''}")
+        return ordered
 
     @staticmethod
     def is_retryable_model_error(e: Exception) -> bool:
@@ -100,18 +132,15 @@ class GeminiRouter:
         return any(code in msg for code in ("RESOURCE_EXHAUSTED", "429", "NOT_FOUND", "404"))
 
     def advance_model(self) -> bool:
-        try:
-            idx = self.PREFERRED_MODELS.index(self.model_name)
-        except ValueError:
-            idx = -1
-        if idx + 1 < len(self.PREFERRED_MODELS):
-            self.model_name = self.PREFERRED_MODELS[idx + 1]
+        if self.model_index + 1 < len(self.models):
+            self.model_index += 1
+            self.model_name = self.models[self.model_index]
             logger.warning(f"모델 사용 불가(할당량 초과 또는 미지원)로 전환 → {self.model_name}")
             return True
         return False
 
     def generate(self, contents, config=None, retries: int = None):
-        retries = len(self.PREFERRED_MODELS) if retries is None else retries
+        retries = len(self.models) if retries is None else retries
         last_err = None
         for attempt in range(retries):
             try:
@@ -278,7 +307,7 @@ class NeoguriTranslatorBot:
 # ==================================================================
 # 2) 스마트 개인비서 봇 (똑똑한 너구리)
 #    - 대화 기억, 검색 기능(기본 OFF, /search on으로 켜기), 파일/사진 분석
-#    - 할당량 초과 시 자동으로 모델 전환 후 세션 재구성
+#    - 할당량 초과/모델 미지원 시 자동으로 모델 전환 후 세션 재구성
 # ==================================================================
 SMART_BOT_INSTRUCTION = (
     "너는 '너구리'라는 이름의 유능한 개인 비서다. 사용자의 업무, 재무, 학습, 일상 질문을 폭넓게 돕는다.\n"
@@ -319,7 +348,7 @@ class SmartGeminiBot:
         return self.user_sessions[chat_id]
 
     def _send_with_retry(self, chat_id: int, content: Union[str, list], retries: int = None):
-        retries = len(router.PREFERRED_MODELS) if retries is None else retries
+        retries = len(router.models) if retries is None else retries
         last_err = None
         for attempt in range(retries):
             chat_session = self._get_chat_session(chat_id)
