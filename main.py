@@ -77,7 +77,8 @@ def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
     return chunks
 
 # ==================================================================
-# Gemini 라우터: 모델 자동 선택 + 재시도 + 할당량 초과 시 자동 모델 전환
+# Gemini 라우터: 모델 자동 선택(사전 테스트 없이 낙관적 시작) + 재시도 +
+#                할당량 초과/모델 미지원 시 자동 모델 전환
 # ==================================================================
 class GeminiRouter:
     PREFERRED_MODELS = [
@@ -89,34 +90,23 @@ class GeminiRouter:
 
     def __init__(self, client: genai.Client):
         self.client = client
-        self.model_name = self._resolve_model()
-
-    def _resolve_model(self) -> str:
-        for name in self.PREFERRED_MODELS:
-            try:
-                self.client.models.generate_content(model=name, contents="ping")
-                logger.info(f"사용할 Gemini 모델 확정: {name}")
-                return name
-            except Exception as e:
-                logger.warning(f"모델 '{name}' 사용 불가, 다음 후보로 전환: {e}")
-        raise RuntimeError(
-            "사용 가능한 Gemini 모델이 하나도 없습니다. GEMINI_API_KEY가 유효한지 확인하세요."
-        )
+        # 재배포 시 할당량을 낭비하지 않도록, 사전 테스트 없이 1순위 모델을 우선 채택
+        self.model_name = self.PREFERRED_MODELS[0]
+        logger.info(f"사용할 Gemini 모델(미검증, 1순위): {self.model_name}")
 
     @staticmethod
-    def is_quota_error(e: Exception) -> bool:
+    def is_retryable_model_error(e: Exception) -> bool:
         msg = str(e)
-        return "RESOURCE_EXHAUSTED" in msg or "429" in msg
+        return any(code in msg for code in ("RESOURCE_EXHAUSTED", "429", "NOT_FOUND", "404"))
 
     def advance_model(self) -> bool:
-        """현재 모델이 할당량 초과일 때 다음 후보 모델로 전환. 더 없으면 False."""
         try:
             idx = self.PREFERRED_MODELS.index(self.model_name)
         except ValueError:
             idx = -1
         if idx + 1 < len(self.PREFERRED_MODELS):
             self.model_name = self.PREFERRED_MODELS[idx + 1]
-            logger.warning(f"할당량 초과로 모델 전환 → {self.model_name}")
+            logger.warning(f"모델 사용 불가(할당량 초과 또는 미지원)로 전환 → {self.model_name}")
             return True
         return False
 
@@ -130,7 +120,7 @@ class GeminiRouter:
                 )
             except Exception as e:
                 last_err = e
-                if self.is_quota_error(e):
+                if self.is_retryable_model_error(e):
                     if not self.advance_model():
                         break
                 else:
@@ -146,7 +136,7 @@ class GeminiRouter:
 router = GeminiRouter(_client)
 
 # ==================================================================
-# 대화 기록 저장소
+# 대화 기록 저장소 (스마트 비서 봇 전용, 사용자별 최근 200개만 보관)
 # ==================================================================
 DB_PATH = os.environ.get("DB_PATH", "chat_history.db")
 
@@ -172,7 +162,7 @@ class ChatHistoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_id ON messages(chat_id)")
             conn.commit()
 
-    def load_history(self, chat_id: int, limit: int = 40) -> List[Dict[str, str]]:
+    def load_history(self, chat_id: int, limit: int = 20) -> List[Dict[str, str]]:
         with closing(self._get_conn()) as conn:
             rows = conn.execute(
                 "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
@@ -200,7 +190,8 @@ class ChatHistoryStore:
             conn.commit()
 
 # ==================================================================
-# 1) 번역봇 - 변경 없음 (router.generate가 내부적으로 할당량 전환 처리)
+# 1) 번역봇 (너구리_영어 / 중국 / 인도네시아)
+#    - 정확한 번역만 출력, 잡담/이모지/코멘트 일체 금지, 최대 존댓말·격식체
 # ==================================================================
 TRANSLATOR_BOT_DEFS = [
     {
@@ -286,7 +277,7 @@ class NeoguriTranslatorBot:
 
 # ==================================================================
 # 2) 스마트 개인비서 봇 (똑똑한 너구리)
-#    - 검색 기능은 기본 OFF, /search on 으로 켤 수 있음
+#    - 대화 기억, 검색 기능(기본 OFF, /search on으로 켜기), 파일/사진 분석
 #    - 할당량 초과 시 자동으로 모델 전환 후 세션 재구성
 # ==================================================================
 SMART_BOT_INSTRUCTION = (
@@ -336,9 +327,9 @@ class SmartGeminiBot:
                 return chat_session.send_message(content)
             except Exception as e:
                 last_err = e
-                if router.is_quota_error(e):
+                if router.is_retryable_model_error(e):
                     if router.advance_model():
-                        self.user_sessions.pop(chat_id, None)  # 새 모델로 세션 재생성
+                        self.user_sessions.pop(chat_id, None)
                         continue
                     else:
                         break
@@ -470,7 +461,7 @@ class SmartGeminiBot:
 
 
 # ==================================================================
-# 실행: 폴링이 죽어도 자동으로 재시작
+# 실행: 폴링이 죽어도 자동으로 재시작하는 래퍼
 # ==================================================================
 def run_forever(bot_obj, name: str):
     while True:
