@@ -2,7 +2,7 @@ import os
 import time
 import logging
 import threading
-from typing import List
+from typing import List, Optional, Callable
 from google import genai
 
 logger = logging.getLogger(__name__)
@@ -30,9 +30,11 @@ class GeminiRouter:
 
     MAX_MODEL_SWITCHES_PER_CALL = 6
 
-    def __init__(self, client: genai.Client, label: str = ""):
+    def __init__(self, client: genai.Client, label: str = "",
+                 on_downgrade: Optional[Callable[[str, str, str], None]] = None):
         self.client = client
         self.label = label
+        self.on_downgrade = on_downgrade
         self._lock = threading.Lock()
         self.models = self._discover_models() or list(self.FALLBACK_MODELS)
         self.model_index = 0
@@ -77,13 +79,23 @@ class GeminiRouter:
         return any(code in msg for code in ("RESOURCE_EXHAUSTED", "429", "NOT_FOUND", "404"))
 
     def advance_model(self) -> bool:
+        old_model = None
+        new_model = None
         with self._lock:
-            if self.model_index + 1 < len(self.models):
-                self.model_index += 1
-                self.model_name = self.models[self.model_index]
-                logger.warning(f"[{self.label}] 모델 사용 불가로 전환 → {self.model_name}")
-                return True
-            return False
+            if self.model_index + 1 >= len(self.models):
+                return False
+            old_model = self.model_name
+            self.model_index += 1
+            self.model_name = self.models[self.model_index]
+            new_model = self.model_name
+            logger.warning(f"[{self.label}] 모델 사용 불가로 전환 → {new_model}")
+
+        if self.on_downgrade:
+            try:
+                self.on_downgrade(self.label, old_model, new_model)
+            except Exception as e:
+                logger.warning(f"[{self.label}] 다운그레이드 알림 콜백 실패: {e}")
+        return True
 
     def generate(self, contents, config=None, max_transient_retries: int = 2):
         switches_used = 0
