@@ -3,7 +3,7 @@ import telebot
 from telebot.types import Message
 from google.genai import types
 
-from common import is_allowed
+from common import is_allowed, get_uptime_str
 from router import GeminiRouter
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,10 @@ class NeoguriTranslatorBot:
         def handle_myid(message: Message):
             self.bot.send_message(message.chat.id, f"🆔 chat_id: `{message.chat.id}`", parse_mode='Markdown')
 
+        @self.bot.message_handler(commands=['uptime'])
+        def handle_uptime(message: Message):
+            self.bot.send_message(message.chat.id, f"⏱ 서버 연속 가동 시간: {get_uptime_str()}")
+
         @self.bot.message_handler(commands=['start'])
         def handle_start(message: Message):
             self.bot.send_message(message.chat.id, f"{self.name} 준비되었습니다. 번역할 문장을 보내주세요.")
@@ -94,6 +98,7 @@ class NeoguriTranslatorBot:
                 message.chat.id,
                 "사용법: 문장을 그대로 보내면 번역문만 반환합니다.\n"
                 "/myid - 내 chat_id 확인\n"
+                "/uptime - 서버 연속 가동 시간 확인\n"
                 "/help - 이 도움말 보기"
             )
 
