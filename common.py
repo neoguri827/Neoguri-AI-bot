@@ -11,6 +11,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_LEN = 4000
+START_TIME = time.time()
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -42,6 +43,13 @@ def is_allowed(chat_id: int) -> bool:
     if not ALLOWED_CHAT_IDS:
         return True
     return chat_id in ALLOWED_CHAT_IDS
+
+
+def get_uptime_str() -> str:
+    elapsed = int(time.time() - START_TIME)
+    hours, remainder = divmod(elapsed, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}시간 {minutes}분 {seconds}초"
 
 
 def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
