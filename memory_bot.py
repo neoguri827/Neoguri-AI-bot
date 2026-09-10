@@ -5,7 +5,7 @@ import telebot
 from telebot.types import Message
 from google.genai import types
 
-from common import is_allowed, split_message
+from common import is_allowed, split_message, get_uptime_str
 from router import GeminiRouter
 from store import ChatHistoryStore
 
@@ -78,6 +78,10 @@ class MemoryGeminiBot:
         def handle_myid(message: Message):
             self.bot.send_message(message.chat.id, f"🆔 chat_id: `{message.chat.id}`", parse_mode='Markdown')
 
+        @self.bot.message_handler(commands=['uptime'])
+        def handle_uptime(message: Message):
+            self.bot.send_message(message.chat.id, f"⏱ 서버 연속 가동 시간: {get_uptime_str()}")
+
         @self.bot.message_handler(commands=['model'])
         def handle_model(message: Message):
             chat_id = message.chat.id
@@ -110,6 +114,7 @@ class MemoryGeminiBot:
                 "/search on|off - 최신 정보 검색 기능 켜기/끄기 (기본 꺼짐)\n"
                 "/reset - 대화 기록 초기화\n"
                 "/model - 현재 사용 모델 확인\n"
+                "/uptime - 서버 연속 가동 시간 확인\n"
                 "/myid - 내 chat_id 확인\n"
                 "/help - 이 도움말 보기"
             )
