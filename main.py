@@ -13,10 +13,6 @@ from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
-translate_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_TRANSLATE")), label="번역")
-assistant_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ASSISTANT")), label="비서")
-mail_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_MAIL")), label="메일")
-
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 if not UPSTASH_URL or not UPSTASH_TOKEN:
@@ -26,18 +22,22 @@ if not UPSTASH_URL or not UPSTASH_TOKEN:
 def main():
     threads = []
 
-    for cfg in TRANSLATOR_BOT_DEFS:
-        token = os.environ.get(cfg["token_env"])
-        if not token:
-            logger.warning(f"{cfg['token_env']} 없어서 {cfg['name']} 건너뜁니다.")
-            continue
-        bot_obj = NeoguriTranslatorBot(cfg["name"], token, cfg["instruction"], translate_router)
-        t = threading.Thread(target=run_forever, args=(bot_obj, cfg["name"]), daemon=True)
-        t.start()
-        threads.append(t)
+    translator_tokens = {cfg["name"]: os.environ.get(cfg["token_env"]) for cfg in TRANSLATOR_BOT_DEFS}
+    if any(translator_tokens.values()):
+        translate_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_TRANSLATE")), label="번역")
+        for cfg in TRANSLATOR_BOT_DEFS:
+            token = translator_tokens[cfg["name"]]
+            if not token:
+                logger.warning(f"{cfg['token_env']} 없어서 {cfg['name']} 건너뜁니다.")
+                continue
+            bot_obj = NeoguriTranslatorBot(cfg["name"], token, cfg["instruction"], translate_router)
+            t = threading.Thread(target=run_forever, args=(bot_obj, cfg["name"]), daemon=True)
+            t.start()
+            threads.append(t)
 
     smart_token = os.environ.get("TELEGRAM_TOKEN_SMART")
     if smart_token:
+        assistant_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ASSISTANT")), label="비서")
         store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="assistant")
         bot_obj = MemoryGeminiBot("똑똑한 너구리", smart_token, assistant_router, store,
                                    ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME)
@@ -49,6 +49,7 @@ def main():
 
     mail_token = os.environ.get("TELEGRAM_TOKEN_MAIL")
     if mail_token:
+        mail_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_MAIL")), label="메일")
         store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="mail")
         bot_obj = MemoryGeminiBot("메일작성용 너구리", mail_token, mail_router, store,
                                    MAIL_INSTRUCTION, MAIL_WELCOME)
