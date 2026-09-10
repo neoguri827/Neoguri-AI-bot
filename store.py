@@ -1,53 +1,31 @@
-import sqlite3
+import json
 from typing import Dict, List
-from contextlib import closing
+from upstash_redis import Redis
 
 
 class ChatHistoryStore:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self._init_db()
+    def __init__(self, redis_url: str, redis_token: str, namespace: str):
+        self.redis = Redis(url=redis_url, token=redis_token)
+        self.namespace = namespace
 
-    def _get_conn(self):
-        return sqlite3.connect(self.db_path, check_same_thread=False)
-
-    def _init_db(self):
-        with closing(self._get_conn()) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id INTEGER NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_id ON messages(chat_id)")
-            conn.commit()
+    def _key(self, chat_id: int) -> str:
+        return f"{self.namespace}:chat:{chat_id}"
 
     def load_history(self, chat_id: int, limit: int = 20) -> List[Dict[str, str]]:
-        with closing(self._get_conn()) as conn:
-            rows = conn.execute(
-                "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
-                (chat_id, limit)
-            ).fetchall()
-        return [{"role": r, "content": c} for r, c in reversed(rows)]
+        key = self._key(chat_id)
+        raw_items = self.redis.lrange(key, -limit, -1)
+        history = []
+        for item in raw_items:
+            try:
+                history.append(json.loads(item))
+            except Exception:
+                continue
+        return history
 
     def append(self, chat_id: int, role: str, content: str, max_rows: int = 200):
-        with closing(self._get_conn()) as conn:
-            conn.execute(
-                "INSERT INTO messages (chat_id, role, content) VALUES (?, ?, ?)",
-                (chat_id, role, content)
-            )
-            conn.execute("""
-                DELETE FROM messages
-                WHERE chat_id = ? AND id NOT IN (
-                    SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?
-                )
-            """, (chat_id, chat_id, max_rows))
-            conn.commit()
+        key = self._key(chat_id)
+        self.redis.rpush(key, json.dumps({"role": role, "content": content}))
+        self.redis.ltrim(key, -max_rows, -1)
 
     def clear(self, chat_id: int):
-        with closing(self._get_conn()) as conn:
-            conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
-            conn.commit()
+        self.redis.delete(self._key(chat_id))
