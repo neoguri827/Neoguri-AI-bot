@@ -17,6 +17,11 @@ translate_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API
 assistant_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ASSISTANT")), label="비서")
 mail_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_MAIL")), label="메일")
 
+UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
+UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+if not UPSTASH_URL or not UPSTASH_TOKEN:
+    raise ValueError("UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN 환경변수가 필요합니다.")
+
 
 def main():
     threads = []
@@ -33,7 +38,7 @@ def main():
 
     smart_token = os.environ.get("TELEGRAM_TOKEN_SMART")
     if smart_token:
-        store = ChatHistoryStore(os.environ.get("DB_PATH_ASSISTANT", "chat_history_assistant.db"))
+        store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="assistant")
         bot_obj = MemoryGeminiBot("똑똑한 너구리", smart_token, assistant_router, store,
                                    ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME)
         t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
@@ -44,7 +49,7 @@ def main():
 
     mail_token = os.environ.get("TELEGRAM_TOKEN_MAIL")
     if mail_token:
-        store = ChatHistoryStore(os.environ.get("DB_PATH_MAIL", "chat_history_mail.db"))
+        store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="mail")
         bot_obj = MemoryGeminiBot("메일작성용 너구리", mail_token, mail_router, store,
                                    MAIL_INSTRUCTION, MAIL_WELCOME)
         t = threading.Thread(target=run_forever, args=(bot_obj, "메일작성용 너구리"), daemon=True)
