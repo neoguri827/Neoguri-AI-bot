@@ -8,7 +8,7 @@ from router import GeminiRouter, resolve_api_key
 from store import ChatHistoryStore
 from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
-from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME
+from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS
 from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
 
 threading.Thread(target=start_health_server, daemon=True).start()
@@ -44,7 +44,8 @@ def main():
         assistant_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ASSISTANT")), label="비서")
         store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="assistant")
         bot_obj = MemoryGeminiBot("똑똑한 너구리", smart_token, assistant_router, store,
-                                   ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME)
+                                   ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME,
+                                   quick_commands=ASSISTANT_QUICK_COMMANDS)
         bot_registry.append(bot_obj)
         t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
         t.start()
