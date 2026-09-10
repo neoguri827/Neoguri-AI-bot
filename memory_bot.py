@@ -19,12 +19,14 @@ THINKING_MESSAGE = "🤔 답변 준비중입니다..."
 
 class MemoryGeminiBot:
     def __init__(self, name: str, token: str, router: GeminiRouter, store: ChatHistoryStore,
-                 base_instruction: str, welcome_message: str):
+                 base_instruction: str, welcome_message: str,
+                 quick_commands: Optional[Dict[str, str]] = None):
         self.name = name
         self.bot = telebot.TeleBot(token)
         self.router = router
         self.store = store
         self.welcome_message = welcome_message
+        self.quick_commands = quick_commands or {}
         self.config_base = types.GenerateContentConfig(system_instruction=base_instruction)
         self.config_search = types.GenerateContentConfig(
             system_instruction=base_instruction,
@@ -117,6 +119,34 @@ class MemoryGeminiBot:
             parts.append(f"[시트: {sheet_name}]\n{df.to_csv(index=False)}")
         return "\n\n".join(parts)
 
+    def _process_and_reply(self, chat_id: int, history_label: str, model_prompt: Union[str, list]):
+        self.bot.send_chat_action(chat_id, 'typing')
+        placeholder = self.bot.send_message(chat_id, THINKING_MESSAGE)
+        try:
+            response = self._send_with_retry(chat_id, model_prompt)
+            reply_text = response.text or EMPTY_REPLY_FALLBACK
+            self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
+            self._save_history_safely(chat_id, history_label, reply_text)
+        except Exception as e:
+            logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
+            self._show_error(
+                chat_id,
+                "⚠️ 오류가 발생했습니다. 잠시 후 다시 시도하거나 /reset을 입력해 주세요.",
+                edit_message_id=placeholder.message_id
+            )
+
+    def _make_quick_command_handler(self, cmd_name: str, template: str):
+        def handler(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            extra = message.text.partition(' ')[2].strip()
+            prompt = template + (f"\n\n[추가 참고 사항]: {extra}" if extra else "")
+            history_label = f"/{cmd_name} {extra}".strip()
+            self._process_and_reply(chat_id, history_label, prompt)
+        return handler
+
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
         def handle_myid(message: Message):
@@ -152,6 +182,8 @@ class MemoryGeminiBot:
 
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
+            quick_list = "\n".join(f"/{c} - {t[:28]}..." for c, t in self.quick_commands.items())
+            quick_section = f"\n\n[전문 분야 단축 명령어]\n{quick_list}" if quick_list else ""
             self.bot.send_message(
                 message.chat.id,
                 f"{self.welcome_message}\n\n"
@@ -161,6 +193,7 @@ class MemoryGeminiBot:
                 "/uptime - 서버 연속 가동 시간 확인\n"
                 "/myid - 내 chat_id 확인\n"
                 "/help - 이 도움말 보기"
+                f"{quick_section}"
             )
 
         @self.bot.message_handler(commands=['start', 'reset'])
@@ -177,27 +210,16 @@ class MemoryGeminiBot:
                 self.store.clear(chat_id)
                 self.bot.send_message(chat_id, "🔄 대화 기록이 초기화되었습니다.")
 
+        for cmd_name, template in self.quick_commands.items():
+            self.bot.message_handler(commands=[cmd_name])(self._make_quick_command_handler(cmd_name, template))
+
         @self.bot.message_handler(func=lambda m: True, content_types=['text'])
         def handle_text(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
                 self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
                 return
-            user_input = message.text
-            self.bot.send_chat_action(chat_id, 'typing')
-            placeholder = self.bot.send_message(chat_id, THINKING_MESSAGE)
-            try:
-                response = self._send_with_retry(chat_id, user_input)
-                reply_text = response.text or EMPTY_REPLY_FALLBACK
-                self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
-                self._save_history_safely(chat_id, user_input, reply_text)
-            except Exception as e:
-                logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
-                self._show_error(
-                    chat_id,
-                    "⚠️ 오류가 발생했습니다. 잠시 후 다시 시도하거나 /reset을 입력해 주세요.",
-                    edit_message_id=placeholder.message_id
-                )
+            self._process_and_reply(chat_id, message.text, message.text)
 
         @self.bot.message_handler(content_types=['document', 'photo'])
         def handle_file(message: Message):
