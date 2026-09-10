@@ -1,7 +1,9 @@
+import io
 import time
 import logging
 from typing import Dict, Any, List, Union
 import telebot
+import pandas as pd
 from telebot.types import Message
 from google.genai import types
 
@@ -72,6 +74,13 @@ class MemoryGeminiBot:
                 self.bot.send_message(chat_id, chunk, parse_mode='Markdown')
             except Exception:
                 self.bot.send_message(chat_id, chunk)
+
+    def _excel_to_text(self, file_bytes: bytes) -> str:
+        sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None, engine="openpyxl")
+        parts = []
+        for sheet_name, df in sheets.items():
+            parts.append(f"[시트: {sheet_name}]\n{df.to_csv(index=False)}")
+        return "\n\n".join(parts)
 
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
@@ -159,21 +168,26 @@ class MemoryGeminiBot:
                 return
             self.bot.send_chat_action(chat_id, 'typing')
             try:
-                if message.content_type == 'document':
-                    file_id = message.document.file_id
-                    mime_type = message.document.mime_type or "application/octet-stream"
-                else:
-                    file_id = message.photo[-1].file_id
-                    mime_type = "image/jpeg"
-
-                file_info = self.bot.get_file(file_id)
-                file_bytes = self.bot.download_file(file_info.file_path)
                 caption = message.caption or "이 파일의 내용을 분석하고 핵심을 요약해줘."
 
-                response = self._send_with_retry(
-                    chat_id,
-                    [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), caption]
-                )
+                if message.content_type == 'document':
+                    file_name = message.document.file_name or ""
+                    mime_type = message.document.mime_type or "application/octet-stream"
+                    file_info = self.bot.get_file(message.document.file_id)
+                    file_bytes = self.bot.download_file(file_info.file_path)
+
+                    if file_name.lower().endswith((".xlsx", ".xls")):
+                        excel_text = self._excel_to_text(file_bytes)
+                        content_parts = [excel_text, caption]
+                    else:
+                        content_parts = [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), caption]
+                else:
+                    file_id = message.photo[-1].file_id
+                    file_info = self.bot.get_file(file_id)
+                    file_bytes = self.bot.download_file(file_info.file_path)
+                    content_parts = [types.Part.from_bytes(data=file_bytes, mime_type="image/jpeg"), caption]
+
+                response = self._send_with_retry(chat_id, content_parts)
                 reply_text = response.text
                 self.store.append(chat_id, "user", f"[파일 첨부] {caption}")
                 self.store.append(chat_id, "model", reply_text)
