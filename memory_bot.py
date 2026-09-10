@@ -9,32 +9,57 @@ from google.genai import types
 
 from common import is_allowed, split_message, get_uptime_str
 from router import GeminiRouter
-from store import ChatHistoryStore
+from store import ChatHistoryStore, KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
 EMPTY_REPLY_FALLBACK = "⚠️ 응답이 비어 있습니다. 다시 한번 시도해 주세요."
 THINKING_MESSAGE = "🤔 답변 준비중입니다..."
+SAVING_MESSAGE = "📚 자료 저장 중입니다..."
+REMEMBER_TRIGGER = "저장해줘"
+EXTRACTION_PROMPT = (
+    "이 문서의 전체 내용을 최대한 원문 그대로 텍스트로 옮겨 적어줘. "
+    "표가 있으면 구조를 유지하고, 요약하지 말고 전체 내용을 빠짐없이 옮겨 적어줘."
+)
+
+
+def extract_remember_name(caption: str, fallback_name: str) -> Optional[str]:
+    caption = caption.strip()
+    if not caption.startswith(REMEMBER_TRIGGER):
+        return None
+    rest = caption[len(REMEMBER_TRIGGER):].strip(" :-")
+    return rest or fallback_name
 
 
 class MemoryGeminiBot:
     def __init__(self, name: str, token: str, router: GeminiRouter, store: ChatHistoryStore,
                  base_instruction: str, welcome_message: str,
-                 quick_commands: Optional[Dict[str, str]] = None):
+                 quick_commands: Optional[Dict[str, str]] = None,
+                 knowledge_store: Optional[KnowledgeStore] = None):
         self.name = name
         self.bot = telebot.TeleBot(token)
         self.router = router
         self.store = store
+        self.base_instruction = base_instruction
         self.welcome_message = welcome_message
         self.quick_commands = quick_commands or {}
-        self.config_base = types.GenerateContentConfig(system_instruction=base_instruction)
-        self.config_search = types.GenerateContentConfig(
-            system_instruction=base_instruction,
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-        )
+        self.knowledge_store = knowledge_store
         self.user_sessions: Dict[int, Any] = {}
         self.search_enabled: Dict[int, bool] = {}
         self._register_handlers()
+
+    def _build_config(self, chat_id: int, search_on: bool) -> types.GenerateContentConfig:
+        instruction = self.base_instruction
+        if self.knowledge_store:
+            kb_text = self.knowledge_store.get_all_text(chat_id)
+            if kb_text:
+                instruction = (
+                    f"{instruction}\n\n"
+                    "[영구 참고자료 — 사용자가 등록해둔 자료다. 관련 질문엔 항상 우선 참고하라]\n"
+                    f"{kb_text}"
+                )
+        tools = [types.Tool(google_search=types.GoogleSearch())] if search_on else None
+        return types.GenerateContentConfig(system_instruction=instruction, tools=tools)
 
     def _history_to_genai_format(self, rows: List[Dict[str, str]]) -> List[types.Content]:
         return [types.Content(role=r["role"], parts=[types.Part(text=r["content"])]) for r in rows]
@@ -43,7 +68,7 @@ class MemoryGeminiBot:
         if chat_id not in self.user_sessions:
             history = self._history_to_genai_format(self.store.load_history(chat_id))
             search_on = self.search_enabled.get(chat_id, False)
-            config = self.config_search if search_on else self.config_base
+            config = self._build_config(chat_id, search_on)
             self.user_sessions[chat_id] = self.router.create_chat(history=history, config=config)
             logger.info(
                 f"[{self.name}] 세션 생성/복원: Chat ID {chat_id} "
@@ -180,10 +205,52 @@ class MemoryGeminiBot:
             self.user_sessions.pop(chat_id, None)
             self.bot.send_message(chat_id, f"🔍 검색 기능을 {'켰습니다' if enable else '껐습니다'}.")
 
+        @self.bot.message_handler(commands=['kb'])
+        def handle_kb_list(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            if not self.knowledge_store:
+                self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
+                return
+            names = self.knowledge_store.list_names(chat_id)
+            if not names:
+                self.bot.send_message(chat_id, "📚 저장된 참고자료가 없습니다.\n파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적어서 등록하세요.")
+                return
+            listing = "\n".join(f"- {n}" for n in names)
+            self.bot.send_message(chat_id, f"📚 저장된 참고자료 목록:\n{listing}")
+
+        @self.bot.message_handler(commands=['forget'])
+        def handle_forget(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            if not self.knowledge_store:
+                self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
+                return
+            name = message.text.partition(' ')[2].strip()
+            if not name:
+                self.bot.send_message(chat_id, "사용법: /forget 문서이름")
+                return
+            if self.knowledge_store.remove(chat_id, name):
+                self.user_sessions.pop(chat_id, None)
+                self.bot.send_message(chat_id, f"🗑 '{name}' 자료를 삭제했습니다.")
+            else:
+                self.bot.send_message(chat_id, f"'{name}'이라는 이름의 저장된 자료를 찾지 못했습니다. /kb로 목록을 확인하세요.")
+
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
             quick_list = "\n".join(f"/{c} - {t[:28]}..." for c, t in self.quick_commands.items())
             quick_section = f"\n\n[전문 분야 단축 명령어]\n{quick_list}" if quick_list else ""
+            kb_section = (
+                "\n\n[영구 참고자료]\n"
+                "파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적으면 영구 저장됩니다 (reset해도 안 사라짐).\n"
+                "/kb - 저장된 자료 목록 확인\n"
+                "/forget 문서이름 - 저장된 자료 삭제"
+                if self.knowledge_store else ""
+            )
             self.bot.send_message(
                 message.chat.id,
                 f"{self.welcome_message}\n\n"
@@ -193,7 +260,7 @@ class MemoryGeminiBot:
                 "/uptime - 서버 연속 가동 시간 확인\n"
                 "/myid - 내 chat_id 확인\n"
                 "/help - 이 도움말 보기"
-                f"{quick_section}"
+                f"{quick_section}{kb_section}"
             )
 
         @self.bot.message_handler(commands=['start', 'reset'])
@@ -208,7 +275,7 @@ class MemoryGeminiBot:
             elif command == '/reset':
                 self.user_sessions.pop(chat_id, None)
                 self.store.clear(chat_id)
-                self.bot.send_message(chat_id, "🔄 대화 기록이 초기화되었습니다.")
+                self.bot.send_message(chat_id, "🔄 대화 기록이 초기화되었습니다. (영구 참고자료는 유지됩니다)")
 
         for cmd_name, template in self.quick_commands.items():
             self.bot.message_handler(commands=[cmd_name])(self._make_quick_command_handler(cmd_name, template))
@@ -227,11 +294,19 @@ class MemoryGeminiBot:
             if not is_allowed(chat_id):
                 self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
                 return
-            self.bot.send_chat_action(chat_id, 'typing')
-            placeholder = self.bot.send_message(chat_id, THINKING_MESSAGE)
-            try:
-                caption = message.caption or "이 파일의 내용을 분석하고 핵심을 요약해줘."
 
+            caption = message.caption or ""
+
+            if message.content_type == 'document':
+                fallback_name = message.document.file_name or "문서"
+            else:
+                fallback_name = "사진"
+
+            remember_name = extract_remember_name(caption, fallback_name)
+
+            self.bot.send_chat_action(chat_id, 'typing')
+            placeholder = self.bot.send_message(chat_id, SAVING_MESSAGE if remember_name else THINKING_MESSAGE)
+            try:
                 if message.content_type == 'document':
                     file_name = message.document.file_name or ""
                     mime_type = message.document.mime_type or "application/octet-stream"
@@ -240,24 +315,43 @@ class MemoryGeminiBot:
 
                     if file_name.lower().endswith((".xlsx", ".xls")):
                         excel_text = self._excel_to_text(file_bytes)
-                        content_parts = [excel_text, caption]
+                        if remember_name:
+                            if self.knowledge_store:
+                                self.knowledge_store.add(chat_id, remember_name, excel_text)
+                                self.user_sessions.pop(chat_id, None)
+                                self._reply(chat_id, f"📚 '{remember_name}' 자료로 저장했습니다.", edit_message_id=placeholder.message_id)
+                            else:
+                                self._show_error(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.", edit_message_id=placeholder.message_id)
+                            return
+                        content_parts = [excel_text, "이 파일의 내용을 분석하고 핵심을 요약해줘."]
                     else:
-                        content_parts = [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), caption]
+                        prompt = EXTRACTION_PROMPT if remember_name else "이 파일의 내용을 분석하고 핵심을 요약해줘."
+                        content_parts = [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), prompt]
                 else:
                     file_id = message.photo[-1].file_id
                     file_info = self.bot.get_file(file_id)
                     file_bytes = self.bot.download_file(file_info.file_path)
-                    content_parts = [types.Part.from_bytes(data=file_bytes, mime_type="image/jpeg"), caption]
+                    prompt = EXTRACTION_PROMPT if remember_name else "이 파일의 내용을 분석하고 핵심을 요약해줘."
+                    content_parts = [types.Part.from_bytes(data=file_bytes, mime_type="image/jpeg"), prompt]
 
                 response = self._send_with_retry(chat_id, content_parts)
                 reply_text = response.text or EMPTY_REPLY_FALLBACK
-                self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
-                self._save_history_safely(chat_id, f"[파일 첨부] {caption}", reply_text)
+
+                if remember_name:
+                    if self.knowledge_store:
+                        self.knowledge_store.add(chat_id, remember_name, reply_text)
+                        self.user_sessions.pop(chat_id, None)
+                        self._reply(chat_id, f"📚 '{remember_name}' 자료로 저장했습니다. 앞으로 관련 질문에 항상 참고합니다.", edit_message_id=placeholder.message_id)
+                    else:
+                        self._show_error(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.", edit_message_id=placeholder.message_id)
+                else:
+                    self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
+                    self._save_history_safely(chat_id, f"[파일 첨부] {caption or '분석 요청'}", reply_text)
             except Exception as e:
                 logger.error(f"[{self.name}] 파일 처리 예외 (Chat ID: {chat_id}): {e}", exc_info=True)
                 self._show_error(
                     chat_id,
-                    "⚠️ 파일 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                    "⚠️ 파일 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
                     edit_message_id=placeholder.message_id
                 )
 
