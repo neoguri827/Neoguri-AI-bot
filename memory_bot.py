@@ -13,6 +13,8 @@ from store import ChatHistoryStore
 
 logger = logging.getLogger(__name__)
 
+EMPTY_REPLY_FALLBACK = "⚠️ 응답이 비어 있습니다. 다시 한번 시도해 주세요."
+
 
 class MemoryGeminiBot:
     def __init__(self, name: str, token: str, router: GeminiRouter, store: ChatHistoryStore,
@@ -79,6 +81,13 @@ class MemoryGeminiBot:
                 self.bot.send_message(chat_id, chunk, parse_mode='Markdown')
             except Exception:
                 self.bot.send_message(chat_id, chunk)
+
+    def _save_history_safely(self, chat_id: int, user_input: str, reply_text: str):
+        try:
+            self.store.append(chat_id, "user", user_input)
+            self.store.append(chat_id, "model", reply_text)
+        except Exception as e:
+            logger.warning(f"[{self.name}] 대화 기록 저장 실패(응답은 정상 전달됨): {e}")
 
     def _excel_to_text(self, file_bytes: bytes) -> str:
         sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None, engine="openpyxl")
@@ -157,10 +166,9 @@ class MemoryGeminiBot:
             self.bot.send_chat_action(chat_id, 'typing')
             try:
                 response = self._send_with_retry(chat_id, user_input)
-                reply_text = response.text
-                self.store.append(chat_id, "user", user_input)
-                self.store.append(chat_id, "model", reply_text)
+                reply_text = response.text or EMPTY_REPLY_FALLBACK
                 self._reply(chat_id, reply_text)
+                self._save_history_safely(chat_id, user_input, reply_text)
             except Exception as e:
                 logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
                 self.bot.send_message(chat_id, "⚠️ 오류가 발생했습니다. 잠시 후 다시 시도하거나 `/reset`을 입력해 주세요.")
@@ -193,10 +201,9 @@ class MemoryGeminiBot:
                     content_parts = [types.Part.from_bytes(data=file_bytes, mime_type="image/jpeg"), caption]
 
                 response = self._send_with_retry(chat_id, content_parts)
-                reply_text = response.text
-                self.store.append(chat_id, "user", f"[파일 첨부] {caption}")
-                self.store.append(chat_id, "model", reply_text)
+                reply_text = response.text or EMPTY_REPLY_FALLBACK
                 self._reply(chat_id, reply_text)
+                self._save_history_safely(chat_id, f"[파일 첨부] {caption}", reply_text)
             except Exception as e:
                 logger.error(f"[{self.name}] 파일 처리 예외 (Chat ID: {chat_id}): {e}", exc_info=True)
                 self.bot.send_message(chat_id, "⚠️ 파일 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
