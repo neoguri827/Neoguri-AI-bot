@@ -29,3 +29,31 @@ class ChatHistoryStore:
 
     def clear(self, chat_id: int):
         self.redis.delete(self._key(chat_id))
+
+
+class KnowledgeStore:
+    """대화 리셋이나 재배포에도 사라지지 않는 영구 참고자료 저장소"""
+
+    def __init__(self, redis_url: str, redis_token: str, namespace: str):
+        self.redis = Redis(url=redis_url, token=redis_token)
+        self.namespace = namespace
+
+    def _key(self, chat_id: int) -> str:
+        return f"{self.namespace}:kb:{chat_id}"
+
+    def add(self, chat_id: int, name: str, content: str):
+        self.redis.hset(self._key(chat_id), name, content)
+
+    def remove(self, chat_id: int, name: str) -> bool:
+        removed = self.redis.hdel(self._key(chat_id), name)
+        return bool(removed)
+
+    def list_names(self, chat_id: int) -> List[str]:
+        return list(self.redis.hkeys(self._key(chat_id)) or [])
+
+    def get_all_text(self, chat_id: int) -> str:
+        data = self.redis.hgetall(self._key(chat_id)) or {}
+        if not data:
+            return ""
+        parts = [f"[참고자료: {name}]\n{content}" for name, content in data.items()]
+        return "\n\n".join(parts)
