@@ -1,7 +1,7 @@
 import io
 import time
 import logging
-from typing import Dict, Any, List, Union
+from typing import Dict, Any, List, Union, Optional
 import telebot
 import pandas as pd
 from telebot.types import Message
@@ -14,6 +14,7 @@ from store import ChatHistoryStore
 logger = logging.getLogger(__name__)
 
 EMPTY_REPLY_FALLBACK = "⚠️ 응답이 비어 있습니다. 다시 한번 시도해 주세요."
+THINKING_MESSAGE = "🤔 답변 준비중입니다..."
 
 
 class MemoryGeminiBot:
@@ -75,12 +76,32 @@ class MemoryGeminiBot:
                 logger.warning(f"[{self.name}] 응답 실패, {wait:.1f}초 후 재시도: {e}")
                 time.sleep(wait)
 
-    def _reply(self, chat_id: int, text: str):
-        for chunk in split_message(text):
+    def _reply(self, chat_id: int, text: str, edit_message_id: Optional[int] = None):
+        chunks = split_message(text)
+        for i, chunk in enumerate(chunks):
+            if i == 0 and edit_message_id is not None:
+                try:
+                    self.bot.edit_message_text(chunk, chat_id=chat_id, message_id=edit_message_id, parse_mode='Markdown')
+                    continue
+                except Exception:
+                    try:
+                        self.bot.edit_message_text(chunk, chat_id=chat_id, message_id=edit_message_id)
+                        continue
+                    except Exception:
+                        pass
             try:
                 self.bot.send_message(chat_id, chunk, parse_mode='Markdown')
             except Exception:
                 self.bot.send_message(chat_id, chunk)
+
+    def _show_error(self, chat_id: int, text: str, edit_message_id: Optional[int] = None):
+        if edit_message_id is not None:
+            try:
+                self.bot.edit_message_text(text, chat_id=chat_id, message_id=edit_message_id)
+                return
+            except Exception:
+                pass
+        self.bot.send_message(chat_id, text)
 
     def _save_history_safely(self, chat_id: int, user_input: str, reply_text: str):
         try:
@@ -164,14 +185,19 @@ class MemoryGeminiBot:
                 return
             user_input = message.text
             self.bot.send_chat_action(chat_id, 'typing')
+            placeholder = self.bot.send_message(chat_id, THINKING_MESSAGE)
             try:
                 response = self._send_with_retry(chat_id, user_input)
                 reply_text = response.text or EMPTY_REPLY_FALLBACK
-                self._reply(chat_id, reply_text)
+                self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
                 self._save_history_safely(chat_id, user_input, reply_text)
             except Exception as e:
                 logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
-                self.bot.send_message(chat_id, "⚠️ 오류가 발생했습니다. 잠시 후 다시 시도하거나 `/reset`을 입력해 주세요.")
+                self._show_error(
+                    chat_id,
+                    "⚠️ 오류가 발생했습니다. 잠시 후 다시 시도하거나 /reset을 입력해 주세요.",
+                    edit_message_id=placeholder.message_id
+                )
 
         @self.bot.message_handler(content_types=['document', 'photo'])
         def handle_file(message: Message):
@@ -180,6 +206,7 @@ class MemoryGeminiBot:
                 self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
                 return
             self.bot.send_chat_action(chat_id, 'typing')
+            placeholder = self.bot.send_message(chat_id, THINKING_MESSAGE)
             try:
                 caption = message.caption or "이 파일의 내용을 분석하고 핵심을 요약해줘."
 
@@ -202,11 +229,15 @@ class MemoryGeminiBot:
 
                 response = self._send_with_retry(chat_id, content_parts)
                 reply_text = response.text or EMPTY_REPLY_FALLBACK
-                self._reply(chat_id, reply_text)
+                self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
                 self._save_history_safely(chat_id, f"[파일 첨부] {caption}", reply_text)
             except Exception as e:
                 logger.error(f"[{self.name}] 파일 처리 예외 (Chat ID: {chat_id}): {e}", exc_info=True)
-                self.bot.send_message(chat_id, "⚠️ 파일 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+                self._show_error(
+                    chat_id,
+                    "⚠️ 파일 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                    edit_message_id=placeholder.message_id
+                )
 
     def run(self):
         self.bot.infinity_polling(timeout=10, long_polling_timeout=5)
