@@ -5,7 +5,7 @@ from google import genai
 
 from common import start_health_server, run_forever, logger, ALLOWED_CHAT_IDS
 from router import GeminiRouter, resolve_api_key
-from store import ChatHistoryStore
+from store import ChatHistoryStore, KnowledgeStore
 from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS
@@ -21,7 +21,7 @@ if not UPSTASH_URL or not UPSTASH_TOKEN:
 
 def main():
     threads = []
-    bot_registry = []  # 다운그레이드 알림을 보낼 봇을 고르기 위한 목록
+    bot_registry = []
 
     translate_router = None
     translator_tokens = {cfg["name"]: os.environ.get(cfg["token_env"]) for cfg in TRANSLATOR_BOT_DEFS}
@@ -43,9 +43,11 @@ def main():
     if smart_token:
         assistant_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ASSISTANT")), label="비서")
         store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="assistant")
+        kb_store = KnowledgeStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="assistant")
         bot_obj = MemoryGeminiBot("똑똑한 너구리", smart_token, assistant_router, store,
                                    ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME,
-                                   quick_commands=ASSISTANT_QUICK_COMMANDS)
+                                   quick_commands=ASSISTANT_QUICK_COMMANDS,
+                                   knowledge_store=kb_store)
         bot_registry.append(bot_obj)
         t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
         t.start()
@@ -70,7 +72,6 @@ def main():
     if not threads:
         raise ValueError("실행 가능한 봇이 없습니다. 환경변수를 확인하세요.")
 
-    # 모델 다운그레이드 알림: "똑똑한 너구리"를 우선 채널로 쓰고, 없으면 아무 봇이나 사용
     notifier_bot = next((b for b in bot_registry if getattr(b, "name", "") == "똑똑한 너구리"), None)
     if notifier_bot is None and bot_registry:
         notifier_bot = bot_registry[0]
