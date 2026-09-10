@@ -47,6 +47,7 @@ class MemoryGeminiBot:
         return self.user_sessions[chat_id]
 
     def _send_with_retry(self, chat_id: int, content: Union[str, list], max_transient_retries: int = 2):
+        switches_used = 0
         transient_left = max_transient_retries
         last_err = None
         while True:
@@ -56,7 +57,11 @@ class MemoryGeminiBot:
             except Exception as e:
                 last_err = e
                 if self.router.is_retryable_model_error(e):
+                    if switches_used >= self.router.MAX_MODEL_SWITCHES_PER_CALL:
+                        logger.error(f"[{self.name}] 모델 전환 한도 초과, 포기")
+                        raise last_err
                     if self.router.advance_model():
+                        switches_used += 1
                         self.user_sessions.pop(chat_id, None)
                         transient_left = max_transient_retries
                         continue
