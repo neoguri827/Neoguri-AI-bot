@@ -77,8 +77,11 @@ def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
     return chunks
 
 # ==================================================================
-# Gemini 라우터: 실시간으로 사용 가능한 모델 목록을 조회해서 자동 설정 +
-#                재시도 + 할당량 초과/모델 미지원 시 자동 모델 전환
+# Gemini 라우터
+#  - 실시간으로 사용 가능한 모델 목록을 조회해서 자동 설정
+#  - 모델 자체 문제(할당량 초과/미지원)는 즉시 다음 모델로 전환
+#  - 일시적 오류(과부하 등)는 짧게(최대 2회)만 재시도
+#  - 여러 스레드가 동시에 모델을 바꿔도 안전하도록 Lock 적용
 # ==================================================================
 class GeminiRouter:
     FALLBACK_MODELS = [
@@ -95,6 +98,7 @@ class GeminiRouter:
 
     def __init__(self, client: genai.Client):
         self.client = client
+        self._lock = threading.Lock()
         self.models = self._discover_models() or list(self.FALLBACK_MODELS)
         self.model_index = 0
         self.model_name = self.models[0]
@@ -140,17 +144,18 @@ class GeminiRouter:
         return any(code in msg for code in ("RESOURCE_EXHAUSTED", "429", "NOT_FOUND", "404"))
 
     def advance_model(self) -> bool:
-        if self.model_index + 1 < len(self.models):
-            self.model_index += 1
-            self.model_name = self.models[self.model_index]
-            logger.warning(f"모델 사용 불가(할당량 초과 또는 미지원)로 전환 → {self.model_name}")
-            return True
-        return False
+        with self._lock:
+            if self.model_index + 1 < len(self.models):
+                self.model_index += 1
+                self.model_name = self.models[self.model_index]
+                logger.warning(f"모델 사용 불가(할당량 초과 또는 미지원)로 전환 → {self.model_name}")
+                return True
+            return False
 
-    def generate(self, contents, config=None, retries: int = None):
-        retries = len(self.models) if retries is None else retries
+    def generate(self, contents, config=None, max_transient_retries: int = 2):
+        transient_left = max_transient_retries
         last_err = None
-        for attempt in range(retries):
+        while True:
             try:
                 return self.client.models.generate_content(
                     model=self.model_name, contents=contents, config=config
@@ -158,13 +163,16 @@ class GeminiRouter:
             except Exception as e:
                 last_err = e
                 if self.is_retryable_model_error(e):
-                    if not self.advance_model():
-                        break
-                else:
-                    wait = 1.5 * (attempt + 1)
-                    logger.warning(f"Gemini 호출 실패, {wait:.1f}초 후 재시도: {e}")
-                    time.sleep(wait)
-        raise last_err
+                    if self.advance_model():
+                        transient_left = max_transient_retries
+                        continue
+                    raise last_err
+                transient_left -= 1
+                if transient_left < 0:
+                    raise last_err
+                wait = 1.5 * (max_transient_retries - transient_left)
+                logger.warning(f"Gemini 호출 실패, {wait:.1f}초 후 재시도: {e}")
+                time.sleep(wait)
 
     def create_chat(self, history=None, config=None):
         return self.client.chats.create(model=self.model_name, config=config, history=history or [])
@@ -229,6 +237,7 @@ class ChatHistoryStore:
 # ==================================================================
 # 1) 번역봇 (너구리_영어 / 중국 / 인도네시아)
 #    - 정확한 번역만 출력, 잡담/이모지/코멘트 일체 금지, 최대 존댓말·격식체
+#    - 대화 기억이 없으므로 /reset은 안내만 하고 끝냄
 # ==================================================================
 TRANSLATOR_BOT_DEFS = [
     {
@@ -285,11 +294,20 @@ class NeoguriTranslatorBot:
         def handle_start(message: Message):
             self.bot.send_message(message.chat.id, f"{self.name} 준비되었습니다. 번역할 문장을 보내주세요.")
 
+        @self.bot.message_handler(commands=['reset'])
+        def handle_reset(message: Message):
+            self.bot.send_message(
+                message.chat.id,
+                "ℹ️ 이 봇은 매번 새로운 문장을 독립적으로 번역하기 때문에, "
+                "따로 초기화할 대화 기록이 없습니다. 그냥 이어서 번역할 문장을 보내주세요."
+            )
+
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
             self.bot.send_message(
                 message.chat.id,
                 "사용법: 문장을 그대로 보내면 번역문만 반환합니다.\n"
+                "이 봇은 대화 기억이 없어 매번 새로 번역합니다.\n"
                 "/myid - 내 chat_id 확인\n"
                 "/help - 이 도움말 보기"
             )
@@ -355,10 +373,10 @@ class SmartGeminiBot:
             )
         return self.user_sessions[chat_id]
 
-    def _send_with_retry(self, chat_id: int, content: Union[str, list], retries: int = None):
-        retries = len(router.models) if retries is None else retries
+    def _send_with_retry(self, chat_id: int, content: Union[str, list], max_transient_retries: int = 2):
+        transient_left = max_transient_retries
         last_err = None
-        for attempt in range(retries):
+        while True:
             chat_session = self._get_chat_session(chat_id)
             try:
                 return chat_session.send_message(content)
@@ -367,14 +385,15 @@ class SmartGeminiBot:
                 if router.is_retryable_model_error(e):
                     if router.advance_model():
                         self.user_sessions.pop(chat_id, None)
+                        transient_left = max_transient_retries
                         continue
-                    else:
-                        break
-                else:
-                    wait = 1.5 * (attempt + 1)
-                    logger.warning(f"[똑똑한 너구리] 응답 실패, {wait:.1f}초 후 재시도: {e}")
-                    time.sleep(wait)
-        raise last_err
+                    raise last_err
+                transient_left -= 1
+                if transient_left < 0:
+                    raise last_err
+                wait = 1.5 * (max_transient_retries - transient_left)
+                logger.warning(f"[똑똑한 너구리] 응답 실패, {wait:.1f}초 후 재시도: {e}")
+                time.sleep(wait)
 
     def _reply(self, chat_id: int, text: str):
         for chunk in split_message(text):
@@ -390,7 +409,11 @@ class SmartGeminiBot:
 
         @self.bot.message_handler(commands=['model'])
         def handle_model(message: Message):
-            self.bot.send_message(message.chat.id, f"🧠 현재 사용 중인 모델: `{router.model_name}`", parse_mode='Markdown')
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            self.bot.send_message(chat_id, f"🧠 현재 사용 중인 모델: `{router.model_name}`", parse_mode='Markdown')
 
         @self.bot.message_handler(commands=['search'])
         def handle_search_toggle(message: Message):
