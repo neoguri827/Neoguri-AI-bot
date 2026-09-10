@@ -8,6 +8,8 @@ from router import GeminiRouter
 
 logger = logging.getLogger(__name__)
 
+EMPTY_REPLY_FALLBACK = "⚠️ 응답이 비어 있습니다. 다시 한번 보내주세요."
+
 TRANSLATOR_BOT_DEFS = [
     {
         "name": "너구리_영어", "token_env": "TELEGRAM_TOKEN_EN",
@@ -111,7 +113,7 @@ class NeoguriTranslatorBot:
             self.bot.send_chat_action(chat_id, 'typing')
             try:
                 response = self.router.generate(contents=message.text, config=self.config)
-                self.bot.send_message(chat_id, response.text)
+                self.bot.send_message(chat_id, response.text or EMPTY_REPLY_FALLBACK)
             except Exception as e:
                 logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
                 self.bot.send_message(chat_id, "⚠️ 번역 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
