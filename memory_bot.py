@@ -1,6 +1,7 @@
 import io
 import time
 import logging
+import threading
 from typing import Dict, Any, List, Union, Optional
 import telebot
 import pandas as pd
@@ -21,6 +22,7 @@ EXTRACTION_PROMPT = (
     "이 문서의 전체 내용을 최대한 원문 그대로 텍스트로 옮겨 적어줘. "
     "표가 있으면 구조를 유지하고, 요약하지 말고 전체 내용을 빠짐없이 옮겨 적어줘."
 )
+GROUP_DEBOUNCE_SECONDS = 3.5
 
 
 def extract_remember_name(caption: str, fallback_name: str) -> Optional[str]:
@@ -46,6 +48,8 @@ class MemoryGeminiBot:
         self.knowledge_store = knowledge_store
         self.user_sessions: Dict[int, Any] = {}
         self.search_enabled: Dict[int, bool] = {}
+        self._group_lock = threading.Lock()
+        self._pending_groups: Dict[str, dict] = {}
         self._register_handlers()
 
     def _build_config(self, chat_id: int, search_on: bool) -> types.GenerateContentConfig:
@@ -144,6 +148,27 @@ class MemoryGeminiBot:
             parts.append(f"[시트: {sheet_name}]\n{df.to_csv(index=False)}")
         return "\n\n".join(parts)
 
+    def _download_file_payload(self, message: Message):
+        if message.content_type == 'document':
+            file_name = message.document.file_name or "문서"
+            mime_type = message.document.mime_type or "application/octet-stream"
+            file_info = self.bot.get_file(message.document.file_id)
+            file_bytes = self.bot.download_file(file_info.file_path)
+        else:
+            file_name = "사진"
+            mime_type = "image/jpeg"
+            file_info = self.bot.get_file(message.photo[-1].file_id)
+            file_bytes = self.bot.download_file(file_info.file_path)
+        return file_name, file_bytes, mime_type
+
+    def _extract_kb_text(self, file_name: str, file_bytes: bytes, mime_type: str) -> str:
+        if file_name.lower().endswith((".xlsx", ".xls")):
+            return self._excel_to_text(file_bytes)
+        response = self.router.generate(
+            contents=[types.Part.from_bytes(data=file_bytes, mime_type=mime_type), EXTRACTION_PROMPT]
+        )
+        return response.text or "(추출된 내용 없음)"
+
     def _process_and_reply(self, chat_id: int, history_label: str, model_prompt: Union[str, list]):
         self.bot.send_chat_action(chat_id, 'typing')
         placeholder = self.bot.send_message(chat_id, THINKING_MESSAGE)
@@ -171,6 +196,123 @@ class MemoryGeminiBot:
             history_label = f"/{cmd_name} {extra}".strip()
             self._process_and_reply(chat_id, history_label, prompt)
         return handler
+
+    # ---------------- 앨범(여러 파일 묶음) 처리 ----------------
+
+    def _buffer_group_message(self, message: Message):
+        group_id = message.media_group_id
+        with self._group_lock:
+            group = self._pending_groups.get(group_id)
+            if group is None:
+                group = {"chat_id": message.chat.id, "items": [], "caption": None, "timer": None}
+                self._pending_groups[group_id] = group
+            group["items"].append(message)
+            if message.caption:
+                group["caption"] = message.caption
+            if group["timer"]:
+                group["timer"].cancel()
+            timer = threading.Timer(GROUP_DEBOUNCE_SECONDS, self._process_group, args=(group_id,))
+            group["timer"] = timer
+            timer.start()
+
+    def _process_group(self, group_id: str):
+        with self._group_lock:
+            group = self._pending_groups.pop(group_id, None)
+        if not group:
+            return
+        chat_id = group["chat_id"]
+        if not is_allowed(chat_id):
+            self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+            return
+
+        caption = (group["caption"] or "").strip()
+        items = group["items"]
+        remember_base = None
+        if caption == REMEMBER_TRIGGER:
+            remember_base = None  # 이름 생략, 각 파일명으로 저장
+        elif caption.startswith(REMEMBER_TRIGGER):
+            remember_base = caption[len(REMEMBER_TRIGGER):].strip(" :-") or None
+            if remember_base is None:
+                remember_base = ""
+
+        if caption.startswith(REMEMBER_TRIGGER):
+            if not self.knowledge_store:
+                self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
+                return
+            notice = self.bot.send_message(chat_id, f"📚 파일 {len(items)}개 저장 중입니다...")
+            saved, failed = [], []
+            for msg in items:
+                try:
+                    file_name, file_bytes, mime_type = self._download_file_payload(msg)
+                    kb_name = f"{remember_base} - {file_name}" if remember_base else file_name
+                    text = self._extract_kb_text(file_name, file_bytes, mime_type)
+                    self.knowledge_store.add(chat_id, kb_name, text)
+                    saved.append(kb_name)
+                except Exception as e:
+                    logger.error(f"[{self.name}] 그룹 파일 저장 실패: {e}", exc_info=True)
+                    failed.append(getattr(msg.document, "file_name", "알 수 없는 파일") if msg.content_type == 'document' else "사진")
+            self.user_sessions.pop(chat_id, None)
+            result = "📚 저장 완료:\n" + "\n".join(f"- {n}" for n in saved)
+            if failed:
+                result += "\n\n⚠️ 저장 실패:\n" + "\n".join(f"- {n}" for n in failed)
+            try:
+                self.bot.edit_message_text(result, chat_id=chat_id, message_id=notice.message_id)
+            except Exception:
+                self.bot.send_message(chat_id, result)
+        else:
+            # 저장 요청이 아니면, 대표로 첫 번째 파일만 분석하고 안내
+            self.bot.send_message(chat_id, f"ℹ️ 파일 {len(items)}개를 받았습니다. 여러 파일 동시 분석은 지원하지 않아 첫 번째 파일만 분석합니다.\n"
+                                            f"전체를 저장하려면 캡션에 '{REMEMBER_TRIGGER}'를 붙여 다시 보내주세요.")
+            self._handle_single_file(items[0])
+
+    # ---------------- 단일 파일 처리 ----------------
+
+    def _handle_single_file(self, message: Message):
+        chat_id = message.chat.id
+        if not is_allowed(chat_id):
+            self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+            return
+
+        caption = message.caption or ""
+        try:
+            file_name, file_bytes, mime_type = self._download_file_payload(message)
+        except Exception as e:
+            logger.error(f"[{self.name}] 파일 다운로드 실패 (Chat ID: {chat_id}): {e}", exc_info=True)
+            self.bot.send_message(chat_id, "⚠️ 파일을 받는 중 오류가 발생했습니다.")
+            return
+
+        remember_name = extract_remember_name(caption, file_name)
+
+        self.bot.send_chat_action(chat_id, 'typing')
+        placeholder = self.bot.send_message(chat_id, SAVING_MESSAGE if remember_name else THINKING_MESSAGE)
+
+        try:
+            if remember_name:
+                if not self.knowledge_store:
+                    self._show_error(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.", edit_message_id=placeholder.message_id)
+                    return
+                text = self._extract_kb_text(file_name, file_bytes, mime_type)
+                self.knowledge_store.add(chat_id, remember_name, text)
+                self.user_sessions.pop(chat_id, None)
+                self._reply(chat_id, f"📚 '{remember_name}' 자료로 저장했습니다. 앞으로 관련 질문에 항상 참고합니다.", edit_message_id=placeholder.message_id)
+                return
+
+            if file_name.lower().endswith((".xlsx", ".xls")):
+                content_parts = [self._excel_to_text(file_bytes), caption or "이 파일의 내용을 분석하고 핵심을 요약해줘."]
+            else:
+                content_parts = [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), caption or "이 파일의 내용을 분석하고 핵심을 요약해줘."]
+
+            response = self._send_with_retry(chat_id, content_parts)
+            reply_text = response.text or EMPTY_REPLY_FALLBACK
+            self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
+            self._save_history_safely(chat_id, f"[파일 첨부] {caption or '분석 요청'}", reply_text)
+        except Exception as e:
+            logger.error(f"[{self.name}] 파일 처리 예외 (Chat ID: {chat_id}): {e}", exc_info=True)
+            self._show_error(
+                chat_id,
+                "⚠️ 파일 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                edit_message_id=placeholder.message_id
+            )
 
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
@@ -247,6 +389,7 @@ class MemoryGeminiBot:
             kb_section = (
                 "\n\n[영구 참고자료]\n"
                 "파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적으면 영구 저장됩니다 (reset해도 안 사라짐).\n"
+                "여러 파일을 한꺼번에 보낼 때도, 그중 아무 파일에나 캡션으로 '저장해줘'를 붙이면 전부 저장됩니다.\n"
                 "/kb - 저장된 자료 목록 확인\n"
                 "/forget 문서이름 - 저장된 자료 삭제"
                 if self.knowledge_store else ""
@@ -290,70 +433,10 @@ class MemoryGeminiBot:
 
         @self.bot.message_handler(content_types=['document', 'photo'])
         def handle_file(message: Message):
-            chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+            if message.media_group_id:
+                self._buffer_group_message(message)
                 return
-
-            caption = message.caption or ""
-
-            if message.content_type == 'document':
-                fallback_name = message.document.file_name or "문서"
-            else:
-                fallback_name = "사진"
-
-            remember_name = extract_remember_name(caption, fallback_name)
-
-            self.bot.send_chat_action(chat_id, 'typing')
-            placeholder = self.bot.send_message(chat_id, SAVING_MESSAGE if remember_name else THINKING_MESSAGE)
-            try:
-                if message.content_type == 'document':
-                    file_name = message.document.file_name or ""
-                    mime_type = message.document.mime_type or "application/octet-stream"
-                    file_info = self.bot.get_file(message.document.file_id)
-                    file_bytes = self.bot.download_file(file_info.file_path)
-
-                    if file_name.lower().endswith((".xlsx", ".xls")):
-                        excel_text = self._excel_to_text(file_bytes)
-                        if remember_name:
-                            if self.knowledge_store:
-                                self.knowledge_store.add(chat_id, remember_name, excel_text)
-                                self.user_sessions.pop(chat_id, None)
-                                self._reply(chat_id, f"📚 '{remember_name}' 자료로 저장했습니다.", edit_message_id=placeholder.message_id)
-                            else:
-                                self._show_error(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.", edit_message_id=placeholder.message_id)
-                            return
-                        content_parts = [excel_text, "이 파일의 내용을 분석하고 핵심을 요약해줘."]
-                    else:
-                        prompt = EXTRACTION_PROMPT if remember_name else "이 파일의 내용을 분석하고 핵심을 요약해줘."
-                        content_parts = [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), prompt]
-                else:
-                    file_id = message.photo[-1].file_id
-                    file_info = self.bot.get_file(file_id)
-                    file_bytes = self.bot.download_file(file_info.file_path)
-                    prompt = EXTRACTION_PROMPT if remember_name else "이 파일의 내용을 분석하고 핵심을 요약해줘."
-                    content_parts = [types.Part.from_bytes(data=file_bytes, mime_type="image/jpeg"), prompt]
-
-                response = self._send_with_retry(chat_id, content_parts)
-                reply_text = response.text or EMPTY_REPLY_FALLBACK
-
-                if remember_name:
-                    if self.knowledge_store:
-                        self.knowledge_store.add(chat_id, remember_name, reply_text)
-                        self.user_sessions.pop(chat_id, None)
-                        self._reply(chat_id, f"📚 '{remember_name}' 자료로 저장했습니다. 앞으로 관련 질문에 항상 참고합니다.", edit_message_id=placeholder.message_id)
-                    else:
-                        self._show_error(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.", edit_message_id=placeholder.message_id)
-                else:
-                    self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
-                    self._save_history_safely(chat_id, f"[파일 첨부] {caption or '분석 요청'}", reply_text)
-            except Exception as e:
-                logger.error(f"[{self.name}] 파일 처리 예외 (Chat ID: {chat_id}): {e}", exc_info=True)
-                self._show_error(
-                    chat_id,
-                    "⚠️ 파일 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
-                    edit_message_id=placeholder.message_id
-                )
+            self._handle_single_file(message)
 
     def run(self):
         self.bot.infinity_polling(timeout=10, long_polling_timeout=5)
