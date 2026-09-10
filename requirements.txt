@@ -1,3 +1,5 @@
 pyTelegramBotAPI
 google-genai
 upstash-redis
+pandas
+openpyxl
