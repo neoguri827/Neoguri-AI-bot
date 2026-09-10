@@ -25,8 +25,10 @@ class GeminiRouter:
 
     EXCLUDE_KEYWORDS = [
         "tts", "audio", "image", "vision", "embedding",
-        "aqa", "live", "veo", "imagen", "learnlm",
+        "aqa", "live", "veo", "imagen", "learnlm", "gemma",
     ]
+
+    MAX_MODEL_SWITCHES_PER_CALL = 6
 
     def __init__(self, client: genai.Client, label: str = ""):
         self.client = client
@@ -84,6 +86,7 @@ class GeminiRouter:
             return False
 
     def generate(self, contents, config=None, max_transient_retries: int = 2):
+        switches_used = 0
         transient_left = max_transient_retries
         last_err = None
         while True:
@@ -94,7 +97,11 @@ class GeminiRouter:
             except Exception as e:
                 last_err = e
                 if self.is_retryable_model_error(e):
+                    if switches_used >= self.MAX_MODEL_SWITCHES_PER_CALL:
+                        logger.error(f"[{self.label}] 모델 전환 한도({self.MAX_MODEL_SWITCHES_PER_CALL}회) 초과, 포기")
+                        raise last_err
                     if self.advance_model():
+                        switches_used += 1
                         transient_left = max_transient_retries
                         continue
                     raise last_err
