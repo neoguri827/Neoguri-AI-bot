@@ -91,3 +91,37 @@ class KnowledgeStore:
         if len(selected) < len(paragraphs):
             excerpt += f"\n...(질문과 관련된 문단만 발췌함, 전체 {len(content):,}자 중 {len(excerpt):,}자 표시)"
         return excerpt
+
+
+class DirectoryStore:
+    """내선번호/비상연락망을 텔레그램에서 직접 등록·검색하는 조직 공용 디렉터리 (전체 채팅 공유, chat_id 구분 없음)"""
+
+    def __init__(self, redis_url: str, redis_token: str, namespace: str):
+        self.redis = Redis(url=redis_url, token=redis_token)
+        self.key = f"{namespace}:directory"
+
+    def add(self, name: str, entry: Dict[str, str]):
+        self.redis.hset(self.key, name, json.dumps(entry, ensure_ascii=False))
+
+    def remove(self, name: str) -> bool:
+        removed = self.redis.hdel(self.key, name)
+        return bool(removed)
+
+    def list_all(self) -> List[Dict[str, str]]:
+        raw = self.redis.hgetall(self.key) or {}
+        entries = []
+        for name, value in raw.items():
+            try:
+                entry = json.loads(value)
+            except Exception:
+                continue
+            entry.setdefault("name", name)
+            entries.append(entry)
+        return entries
+
+    def find(self, query: str) -> List[Dict[str, str]]:
+        query_lower = query.lower()
+        return [
+            e for e in self.list_all()
+            if query_lower in " ".join(str(v) for v in e.values() if v).lower()
+        ]
