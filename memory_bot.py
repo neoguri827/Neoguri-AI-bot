@@ -31,12 +31,14 @@ MAX_CACHED_SESSIONS = 200
 MIN_LOCAL_PDF_TEXT_LENGTH = 100
 
 
-def extract_remember_name(caption: str, fallback_name: str) -> Optional[str]:
+def extract_remember_name(caption: str, fallback_name: str) -> Tuple[Optional[str], bool]:
     caption = caption.strip()
     if not caption.startswith(REMEMBER_TRIGGER):
-        return None
+        return None, False
     rest = caption[len(REMEMBER_TRIGGER):].strip(" :-")
-    return rest or fallback_name
+    if rest:
+        return rest, False
+    return fallback_name, True
 
 
 class MemoryGeminiBot:
@@ -77,6 +79,17 @@ class MemoryGeminiBot:
             for cid, _ in oldest_first[:excess]:
                 self._forget_session(cid)
                 logger.info(f"[{self.name}] 세션 상한 초과로 정리: Chat ID {cid}")
+
+    def _unique_fallback_name(self, chat_id: int, base_name: str) -> str:
+        if not self.knowledge_store:
+            return base_name
+        existing = set(self.knowledge_store.list_names(chat_id))
+        if base_name not in existing:
+            return base_name
+        i = 2
+        while f"{base_name} ({i})" in existing:
+            i += 1
+        return f"{base_name} ({i})"
 
     def _build_config(self, chat_id: int, search_on: bool) -> types.GenerateContentConfig:
         instruction = self.base_instruction
@@ -343,7 +356,8 @@ class MemoryGeminiBot:
             for msg in items:
                 try:
                     file_name, file_bytes, mime_type = self._download_file_payload(msg)
-                    kb_name = f"{remember_base} - {file_name}" if remember_base else file_name
+                    base_kb_name = f"{remember_base} - {file_name}" if remember_base else file_name
+                    kb_name = self._unique_fallback_name(chat_id, base_kb_name)
                     text = self._extract_kb_text(file_name, file_bytes, mime_type)
                     self.knowledge_store.add(chat_id, kb_name, text)
                     saved.append(kb_name)
@@ -379,7 +393,7 @@ class MemoryGeminiBot:
             self.bot.send_message(chat_id, "⚠️ 파일을 받는 중 오류가 발생했습니다.")
             return
 
-        remember_name = extract_remember_name(caption, file_name)
+        remember_name, is_fallback = extract_remember_name(caption, file_name)
 
         self.bot.send_chat_action(chat_id, 'typing')
         placeholder = self.bot.send_message(chat_id, SAVING_MESSAGE if remember_name else THINKING_MESSAGE)
@@ -389,10 +403,11 @@ class MemoryGeminiBot:
                 if not self.knowledge_store:
                     self._show_error(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.", edit_message_id=placeholder.message_id)
                     return
+                final_name = self._unique_fallback_name(chat_id, remember_name) if is_fallback else remember_name
                 text = self._extract_kb_text(file_name, file_bytes, mime_type)
-                self.knowledge_store.add(chat_id, remember_name, text)
+                self.knowledge_store.add(chat_id, final_name, text)
                 self._forget_session(chat_id)
-                self._reply(chat_id, f"📚 '{remember_name}' 자료로 저장했습니다. 앞으로 관련 질문에 자동으로 참고합니다.", edit_message_id=placeholder.message_id)
+                self._reply(chat_id, f"📚 '{final_name}' 자료로 저장했습니다. 앞으로 관련 질문에 자동으로 참고합니다.", edit_message_id=placeholder.message_id)
                 return
 
             if file_name.lower().endswith((".xlsx", ".xls")):
