@@ -8,7 +8,7 @@ from router import GeminiRouter, resolve_api_key
 from store import ChatHistoryStore, KnowledgeStore
 from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
-from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS
+from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS, classify_complexity
 from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
 from puppy_bot import PUPPY_INSTRUCTION, PUPPY_WELCOME
 from alarm_bot import NeoguriAlarmBot
@@ -65,7 +65,8 @@ def main():
                                        quick_commands=ASSISTANT_QUICK_COMMANDS,
                                        knowledge_store=kb_store,
                                        enable_token_usage=True,
-                                       enable_session_confirmation=True)
+                                       enable_session_confirmation=True,
+                                       complexity_classifier=classify_complexity)
             t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
             t.start()
             threads.append(t)

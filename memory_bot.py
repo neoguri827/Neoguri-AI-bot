@@ -3,7 +3,7 @@ import re
 import time
 import logging
 import threading
-from typing import Dict, Any, List, Union, Optional, Tuple
+from typing import Callable, Dict, Any, List, Union, Optional, Tuple
 import telebot
 import pandas as pd
 from telebot.types import Message
@@ -72,7 +72,8 @@ class MemoryGeminiBot:
                  quick_commands: Optional[Dict[str, str]] = None,
                  knowledge_store: Optional[KnowledgeStore] = None,
                  enable_token_usage: bool = False,
-                 enable_session_confirmation: bool = False):
+                 enable_session_confirmation: bool = False,
+                 complexity_classifier: Optional[Callable[[str], str]] = None):
         self.name = name
         self.bot = telebot.TeleBot(token, threaded=False)
         self.router = router
@@ -83,8 +84,10 @@ class MemoryGeminiBot:
         self.knowledge_store = knowledge_store
         self.enable_token_usage = enable_token_usage
         self.enable_session_confirmation = enable_session_confirmation
+        self.complexity_classifier = complexity_classifier
         self.user_sessions: Dict[int, Any] = {}
         self.session_last_used: Dict[int, float] = {}
+        self.session_tier: Dict[int, str] = {}
         self.session_turn_count: Dict[int, int] = {}
         self.awaiting_confirm: Dict[int, bool] = {}
         self.pending_notice: Dict[int, str] = {}
@@ -97,9 +100,18 @@ class MemoryGeminiBot:
     def _forget_session(self, chat_id: int):
         self.user_sessions.pop(chat_id, None)
         self.session_last_used.pop(chat_id, None)
+        self.session_tier.pop(chat_id, None)
         self.session_turn_count.pop(chat_id, None)
         self.awaiting_confirm.pop(chat_id, None)
         self.pending_notice.pop(chat_id, None)
+
+    def _tier_for(self, text: str) -> str:
+        if not self.complexity_classifier:
+            return "flash"
+        try:
+            return self.complexity_classifier(text)
+        except Exception:
+            return "flash"
 
     def _evict_stale_sessions(self):
         now = time.time()
@@ -187,20 +199,26 @@ class MemoryGeminiBot:
     def _history_to_genai_format(self, rows: List[Dict[str, str]]) -> List[types.Content]:
         return [types.Content(role=r["role"], parts=[types.Part(text=r["content"])]) for r in rows]
 
-    def _get_chat_session(self, chat_id: int):
+    def _get_chat_session(self, chat_id: int, tier: str = "flash"):
         self.session_last_used[chat_id] = time.time()
+        if chat_id in self.user_sessions and self.session_tier.get(chat_id) != tier:
+            logger.info(
+                f"[{self.name}] 등급 전환({self.session_tier.get(chat_id)} → {tier})으로 세션 재생성: Chat ID {chat_id}"
+            )
+            self._forget_session(chat_id)
         if chat_id not in self.user_sessions:
             self._evict_stale_sessions()
             history = self._history_to_genai_format(self.store.load_history(chat_id, limit=HISTORY_LOAD_LIMIT))
             search_on = self.search_enabled.get(chat_id, False)
             config = self._build_config(chat_id, search_on)
-            self.user_sessions[chat_id] = self.router.create_chat(history=history, config=config)
+            self.user_sessions[chat_id] = self.router.create_chat(history=history, config=config, tier=tier)
+            self.session_tier[chat_id] = tier
             self.session_last_used[chat_id] = time.time()
             self.session_turn_count[chat_id] = 0
             logger.info(
                 f"[{self.name}] 세션 생성/복원: Chat ID {chat_id} "
-                f"(기록 {len(history)}건, 검색={'ON' if search_on else 'OFF'}, 모델={self.router.model_name}, "
-                f"캐시된 세션 수={len(self.user_sessions)})"
+                f"(기록 {len(history)}건, 검색={'ON' if search_on else 'OFF'}, 등급={tier}, "
+                f"모델={self.router.current_model(tier)}, 캐시된 세션 수={len(self.user_sessions)})"
             )
         return self.user_sessions[chat_id]
 
@@ -254,12 +272,14 @@ class MemoryGeminiBot:
         self.awaiting_confirm.pop(chat_id, None)
         return False
 
-    def _send_with_retry(self, chat_id: int, content: Union[str, list], max_transient_retries: int = 2):
+    def _send_with_retry(self, chat_id: int, content: Union[str, list], tier: str = "flash",
+                          max_transient_retries: int = 2):
         switches_used = 0
         transient_left = max_transient_retries
         last_err = None
+        current_tier = tier
         while True:
-            chat_session = self._get_chat_session(chat_id)
+            chat_session = self._get_chat_session(chat_id, current_tier)
             try:
                 response = chat_session.send_message(content)
                 self._register_turn(chat_id, response)
@@ -273,7 +293,14 @@ class MemoryGeminiBot:
                         # 새 모델로 세션을 재생성하도록 캐시를 비운다.
                         self._forget_session(chat_id)
                         raise last_err
-                    if self.router.advance_model():
+                    if self.router.advance_model(current_tier):
+                        switches_used += 1
+                        self._forget_session(chat_id)
+                        transient_left = max_transient_retries
+                        continue
+                    if current_tier != "flash":
+                        # 상위 등급이 전부 소진되면 가용성을 위해 flash로 강등해 계속 시도한다.
+                        current_tier = "flash"
                         switches_used += 1
                         self._forget_session(chat_id)
                         transient_left = max_transient_retries
@@ -383,11 +410,11 @@ class MemoryGeminiBot:
         return response.text or "(추출된 내용 없음)"
 
     def _process_and_reply(self, chat_id: int, history_label: str, model_prompt: Union[str, list],
-                            thinking_text: str = THINKING_MESSAGE):
+                            thinking_text: str = THINKING_MESSAGE, tier: str = "flash"):
         self.bot.send_chat_action(chat_id, 'typing')
         placeholder = self.bot.send_message(chat_id, thinking_text)
         try:
-            response = self._send_with_retry(chat_id, model_prompt)
+            response = self._send_with_retry(chat_id, model_prompt, tier=tier)
             reply_text = response.text or EMPTY_REPLY_FALLBACK
             display_text = reply_text
             if self.enable_token_usage and self.show_tokens.get(chat_id, True):
@@ -415,7 +442,9 @@ class MemoryGeminiBot:
             base_text = template + (f"\n\n[추가 참고 사항]: {extra}" if extra else "")
             prompt, matched_names = self._build_prompt_with_kb(chat_id, base_text)
             history_label = f"/{cmd_name} {extra}".strip()
-            self._process_and_reply(chat_id, history_label, prompt, thinking_text=self._thinking_text_for(matched_names))
+            # 전문 분야 단축 명령어는 정확도가 중요하므로, 등급 자동분기가 켜진 봇에서는 항상 pro로 처리한다.
+            tier = "pro" if self.complexity_classifier else "flash"
+            self._process_and_reply(chat_id, history_label, prompt, thinking_text=self._thinking_text_for(matched_names), tier=tier)
         return handler
 
     # ---------------- 앨범(여러 파일 묶음) 처리 ----------------
@@ -530,7 +559,9 @@ class MemoryGeminiBot:
             else:
                 content_parts = [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), caption or "이 파일의 내용을 분석하고 핵심을 요약해줘."]
 
-            response = self._send_with_retry(chat_id, content_parts)
+            # 첨부파일 분석은 정확도가 중요하므로, 등급 자동분기가 켜진 봇에서는 항상 pro로 처리한다.
+            tier = "pro" if self.complexity_classifier else "flash"
+            response = self._send_with_retry(chat_id, content_parts, tier=tier)
             reply_text = response.text or EMPTY_REPLY_FALLBACK
             display_text = reply_text
             if self.enable_token_usage and self.show_tokens.get(chat_id, True):
@@ -570,7 +601,15 @@ class MemoryGeminiBot:
             if not is_allowed(chat_id):
                 self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
-            self.bot.send_message(chat_id, f"현재 사용 중인 모델: {self.router.model_name}")
+            if self.complexity_classifier:
+                self.bot.send_message(
+                    chat_id,
+                    f"Flash 모델(간단한 질문): {self.router.current_model('flash')}\n"
+                    f"Pro 모델(전문/복잡한 질문): {self.router.current_model('pro')}\n"
+                    "질문 난이도에 따라 자동으로 등급이 선택됩니다."
+                )
+            else:
+                self.bot.send_message(chat_id, f"현재 사용 중인 모델: {self.router.current_model('flash')}")
 
         @self.bot.message_handler(commands=['search'])
         def handle_search_toggle(message: Message):
@@ -658,6 +697,11 @@ class MemoryGeminiBot:
                 if self.knowledge_store else ""
             )
             tokens_line = "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 켜짐)\n" if self.enable_token_usage else ""
+            tier_line = (
+                "/model - 질문 난이도에 따라 자동 선택되는 모델 확인 "
+                "(계산·법령·재무 등 전문 질문은 Pro, 일상 질문은 Flash)\n"
+                if self.complexity_classifier else "/model - 현재 사용 모델 확인\n"
+            )
             session_note = (
                 "\n대화가 길어지면 계속 이어갈지 확인 메시지가 뜹니다. "
                 "'응'이면 계속, '아니오'면 대화 기록을 정리합니다."
@@ -670,7 +714,7 @@ class MemoryGeminiBot:
                 "/search on|off - 최신 정보 검색 기능 켜기/끄기 (기본 꺼짐)\n"
                 f"{tokens_line}"
                 "/reset - 대화 기록 초기화\n"
-                "/model - 현재 사용 모델 확인\n"
+                f"{tier_line}"
                 "/uptime - 서버 연속 가동 시간 확인\n"
                 "/myid - 내 chat_id 확인\n"
                 "/help - 이 도움말 보기\n"
@@ -704,7 +748,8 @@ class MemoryGeminiBot:
             if self.awaiting_confirm.get(chat_id) and self._handle_continue_confirmation(chat_id, message.text):
                 return
             prompt, matched_names = self._build_prompt_with_kb(chat_id, message.text)
-            self._process_and_reply(chat_id, message.text, prompt, thinking_text=self._thinking_text_for(matched_names))
+            tier = self._tier_for(message.text)
+            self._process_and_reply(chat_id, message.text, prompt, thinking_text=self._thinking_text_for(matched_names), tier=tier)
 
         @self.bot.message_handler(content_types=['document', 'photo'])
         def handle_file(message: Message):

@@ -25,6 +25,26 @@ ASSISTANT_WELCOME = (
     "전문 분야 단축 명령어는 `/help`로 확인하세요."
 )
 
+# 전문 자문이 필요해 보이는 질문(계산/법령/재무 등)은 Pro 모델로, 나머지는 Flash로 자동 분기한다.
+COMPLEXITY_KEYWORDS = [
+    "계산", "세율", "세금", "법인세", "부가가치세", "부가세", "원천세", "퇴직금", "통상임금",
+    "주휴수당", "연장수당", "야간수당", "휴일수당", "연차", "근로계약", "근로기준법",
+    "재무제표", "손익계산서", "재무상태표", "감사", "분개", "회계", "ROE", "BEP",
+    "손익분기점", "관세", "HS코드", "원산지", "수출입", "컴플라이언스", "리스크",
+    "노무", "K-IFRS", "법령", "판례", "소송", "계약서", "검토", "분석",
+]
+COMPLEXITY_LENGTH_THRESHOLD = 200
+
+
+def classify_complexity(text: str) -> str:
+    """자문형 질문(전문 지식/계산/검토가 필요한 질문)은 pro, 그 외 일상적인 질문은 flash로 분류한다."""
+    if len(text) >= COMPLEXITY_LENGTH_THRESHOLD:
+        return "pro"
+    if any(keyword in text for keyword in COMPLEXITY_KEYWORDS):
+        return "pro"
+    return "flash"
+
+
 ASSISTANT_QUICK_COMMANDS = {
     "cfo": "재무상태표 및 손익계산서를 CFO 관점에서 요약 분석하고, 유동비율/부채비율/ROE 등 핵심 재무비율을 산출해줘.",
     "audit": "회계 분개 내역을 검토하고, 숫자 이상 징후나 오류 가능성이 있는 항목을 교차 검증해서 짚어줘.",
