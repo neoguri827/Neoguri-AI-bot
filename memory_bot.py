@@ -27,8 +27,10 @@ GROUP_DEBOUNCE_SECONDS = 3.0
 MAX_AUTO_KB_MATCHES = 2
 MAX_KB_CHARS_PER_DOC = 6000
 HISTORY_LOAD_LIMIT = 8
-SESSION_MAX_TURNS = 3           # 이 턴 수에 도달하면 계속 기억할지 사용자에게 확인
+SESSION_MAX_TURNS = 3           # 이 턴 수에 도달하면 계속 기억할지 사용자에게 확인 (안전장치, 토큰 조회 실패 시에도 동작)
 SESSION_HARD_LIMIT_TURNS = 5    # 응답이 없어도 이 턴 수를 넘으면 강제로 정리 (안전장치)
+SESSION_TOKEN_SOFT_LIMIT = 6000   # 직전 응답의 입력 토큰이 이 값을 넘으면 계속 기억할지 확인
+SESSION_TOKEN_HARD_LIMIT = 12000  # 이 값을 넘으면 확인 없이 강제로 정리
 SESSION_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
 MAX_CACHED_SESSIONS = 200
 MIN_LOCAL_PDF_TEXT_LENGTH = 100
@@ -69,7 +71,8 @@ class MemoryGeminiBot:
                  base_instruction: str, welcome_message: str,
                  quick_commands: Optional[Dict[str, str]] = None,
                  knowledge_store: Optional[KnowledgeStore] = None,
-                 enable_token_usage: bool = False):
+                 enable_token_usage: bool = False,
+                 enable_session_confirmation: bool = False):
         self.name = name
         self.bot = telebot.TeleBot(token)
         self.router = router
@@ -79,6 +82,7 @@ class MemoryGeminiBot:
         self.quick_commands = quick_commands or {}
         self.knowledge_store = knowledge_store
         self.enable_token_usage = enable_token_usage
+        self.enable_session_confirmation = enable_session_confirmation
         self.user_sessions: Dict[int, Any] = {}
         self.session_last_used: Dict[int, float] = {}
         self.session_turn_count: Dict[int, int] = {}
@@ -200,20 +204,39 @@ class MemoryGeminiBot:
             )
         return self.user_sessions[chat_id]
 
-    def _register_turn(self, chat_id: int):
+    def _register_turn(self, chat_id: int, response=None):
         count = self.session_turn_count.get(chat_id, 0) + 1
         self.session_turn_count[chat_id] = count
 
-        if count >= SESSION_HARD_LIMIT_TURNS:
-            logger.info(f"[{self.name}] 세션 강제 한도 도달({count}턴), 자동으로 세션 재구성 (Chat ID {chat_id})")
+        prompt_tokens = None
+        usage = getattr(response, "usage_metadata", None) if response is not None else None
+        if usage is not None:
+            prompt_tokens = getattr(usage, "prompt_token_count", None)
+
+        hit_hard_limit = count >= SESSION_HARD_LIMIT_TURNS or (
+            prompt_tokens is not None and prompt_tokens >= SESSION_TOKEN_HARD_LIMIT
+        )
+        hit_soft_limit = count >= SESSION_MAX_TURNS or (
+            prompt_tokens is not None and prompt_tokens >= SESSION_TOKEN_SOFT_LIMIT
+        )
+
+        if hit_hard_limit:
+            logger.info(
+                f"[{self.name}] 세션 강제 한도 도달({count}턴, 입력 토큰 {prompt_tokens}), "
+                f"자동으로 세션 재구성 (Chat ID {chat_id})"
+            )
             self._forget_session(chat_id)
-            self.pending_notice[chat_id] = AUTO_RESET_NOTICE_TEXT
+            if self.enable_session_confirmation:
+                self.pending_notice[chat_id] = AUTO_RESET_NOTICE_TEXT
             return
 
-        if count >= SESSION_MAX_TURNS and not self.awaiting_confirm.get(chat_id):
+        if self.enable_session_confirmation and hit_soft_limit and not self.awaiting_confirm.get(chat_id):
             self.awaiting_confirm[chat_id] = True
             self.pending_notice[chat_id] = CONTINUE_CONFIRM_TEXT
-            logger.info(f"[{self.name}] 세션 누적 컨텍스트 한도 도달({count}턴), 사용자에게 유지 여부 확인 (Chat ID {chat_id})")
+            logger.info(
+                f"[{self.name}] 세션 누적 컨텍스트 한도 도달({count}턴, 입력 토큰 {prompt_tokens}), "
+                f"사용자에게 유지 여부 확인 (Chat ID {chat_id})"
+            )
 
     def _handle_continue_confirmation(self, chat_id: int, text: str) -> bool:
         normalized = text.strip().lower()
@@ -239,7 +262,7 @@ class MemoryGeminiBot:
             chat_session = self._get_chat_session(chat_id)
             try:
                 response = chat_session.send_message(content)
-                self._register_turn(chat_id)
+                self._register_turn(chat_id, response)
                 return response
             except Exception as e:
                 last_err = e
@@ -635,6 +658,12 @@ class MemoryGeminiBot:
                 if self.knowledge_store else ""
             )
             tokens_line = "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 켜짐)\n" if self.enable_token_usage else ""
+            session_note = (
+                "\n대화가 길어지면 계속 이어갈지 확인 메시지가 뜹니다. "
+                "'응'이면 계속, '아니오'면 대화 기록을 정리합니다."
+                if self.enable_session_confirmation else
+                "\n대화가 너무 길어지면 별도 확인 없이 자동으로 오래된 맥락을 정리합니다."
+            )
             self.bot.send_message(
                 chat_id,
                 f"{self.welcome_message}\n\n"
@@ -645,8 +674,7 @@ class MemoryGeminiBot:
                 "/uptime - 서버 연속 가동 시간 확인\n"
                 "/myid - 내 chat_id 확인\n"
                 "/help - 이 도움말 보기\n"
-                "\n대화가 길어지면(약 3턴 이상) 계속 이어갈지 확인 메시지가 뜹니다. "
-                "'응'이면 계속, '아니오'면 대화 기록을 정리합니다."
+                f"{session_note}"
                 f"{quick_section}{kb_section}"
             )
 

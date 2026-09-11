@@ -3,17 +3,18 @@ import threading
 
 from google import genai
 
-from common import start_health_server, run_forever, logger, ALLOWED_CHAT_IDS
+from common import start_health_server, run_forever, logger
 from router import GeminiRouter, resolve_api_key
 from store import ChatHistoryStore, KnowledgeStore
 from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS
 from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
-from casual_bot import CASUAL_INSTRUCTION, CASUAL_WELCOME
+from puppy_bot import PUPPY_INSTRUCTION, PUPPY_WELCOME
 from alarm_bot import NeoguriAlarmBot
 
 threading.Thread(target=start_health_server, daemon=True).start()
+
 
 def _get_env_token(name: str):
     """환경변수에 실수로 섞여 들어간 공백/줄바꿈 때문에 텔레그램 토큰 검증이
@@ -30,16 +31,14 @@ if not UPSTASH_URL or not UPSTASH_TOKEN:
 
 def main():
     threads = []
-    bot_registry = []
 
-    translate_router = None
     translator_tokens = {cfg["name"]: _get_env_token(cfg["token_env"]) for cfg in TRANSLATOR_BOT_DEFS}
     if any(translator_tokens.values()):
+        translate_router = None
         try:
             translate_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_TRANSLATE")), label="번역")
         except Exception as e:
             logger.error(f"번역 라우터 초기화 실패, 번역봇 전체를 건너뜁니다: {e}", exc_info=True)
-            translate_router = None
         if translate_router is not None:
             for cfg in TRANSLATOR_BOT_DEFS:
                 token = translator_tokens[cfg["name"]]
@@ -51,12 +50,10 @@ def main():
                 except Exception as e:
                     logger.error(f"{cfg['name']} 초기화 실패, 건너뜁니다: {e}", exc_info=True)
                     continue
-                bot_registry.append(bot_obj)
                 t = threading.Thread(target=run_forever, args=(bot_obj, cfg["name"]), daemon=True)
                 t.start()
                 threads.append(t)
 
-    assistant_router = None
     smart_token = _get_env_token("TELEGRAM_TOKEN_SMART")
     if smart_token:
         try:
@@ -67,18 +64,16 @@ def main():
                                        ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME,
                                        quick_commands=ASSISTANT_QUICK_COMMANDS,
                                        knowledge_store=kb_store,
-                                       enable_token_usage=True)
-            bot_registry.append(bot_obj)
+                                       enable_token_usage=True,
+                                       enable_session_confirmation=True)
             t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
             t.start()
             threads.append(t)
         except Exception as e:
             logger.error(f"똑똑한 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
-            assistant_router = None
     else:
         logger.warning("TELEGRAM_TOKEN_SMART 없어서 똑똑한 너구리는 건너뜁니다.")
 
-    mail_router = None
     mail_token = _get_env_token("TELEGRAM_TOKEN_MAIL")
     if mail_token:
         try:
@@ -86,72 +81,44 @@ def main():
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="mail")
             bot_obj = MemoryGeminiBot("메일작성용 너구리", mail_token, mail_router, store,
                                        MAIL_INSTRUCTION, MAIL_WELCOME)
-            bot_registry.append(bot_obj)
             t = threading.Thread(target=run_forever, args=(bot_obj, "메일작성용 너구리"), daemon=True)
             t.start()
             threads.append(t)
         except Exception as e:
             logger.error(f"메일작성용 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
-            mail_router = None
     else:
         logger.warning("TELEGRAM_TOKEN_MAIL 없어서 메일작성용 너구리는 건너뜁니다.")
 
-    casual_router = None
-    casual_token = _get_env_token("TELEGRAM_TOKEN_CASUAL")
-    if casual_token:
+    puppy_token = _get_env_token("TELEGRAM_TOKEN_CASUAL")
+    if puppy_token:
         try:
-            casual_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_CASUAL")), label="잡담")
+            puppy_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_CASUAL")), label="개아")
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
-            bot_obj = MemoryGeminiBot("심심할 때 너구리", casual_token, casual_router, store,
-                                       CASUAL_INSTRUCTION, CASUAL_WELCOME)
-            bot_registry.append(bot_obj)
-            t = threading.Thread(target=run_forever, args=(bot_obj, "심심할 때 너구리"), daemon=True)
+            bot_obj = MemoryGeminiBot("개아", puppy_token, puppy_router, store,
+                                       PUPPY_INSTRUCTION, PUPPY_WELCOME)
+            t = threading.Thread(target=run_forever, args=(bot_obj, "개아"), daemon=True)
             t.start()
             threads.append(t)
         except Exception as e:
-            logger.error(f"심심할 때 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
-            casual_router = None
+            logger.error(f"개아 초기화 실패, 건너뜁니다: {e}", exc_info=True)
     else:
-        logger.warning("TELEGRAM_TOKEN_CASUAL 없어서 심심할 때 너구리는 건너뜁니다.")
+        logger.warning("TELEGRAM_TOKEN_CASUAL 없어서 개아는 건너뜁니다.")
 
-    alarm_router = None
     alarm_token = _get_env_token("TELEGRAM_TOKEN_ALARM")
     if alarm_token:
         try:
             alarm_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ALARM")), label="알람")
             bot_obj = NeoguriAlarmBot("알람너구리", alarm_token, alarm_router)
-            bot_registry.append(bot_obj)
             t = threading.Thread(target=run_forever, args=(bot_obj, "알람너구리"), daemon=True)
             t.start()
             threads.append(t)
         except Exception as e:
             logger.error(f"알람너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
-            alarm_router = None
     else:
         logger.warning("TELEGRAM_TOKEN_ALARM 없어서 알람너구리는 건너뜁니다.")
 
     if not threads:
         raise ValueError("실행 가능한 봇이 없습니다. 환경변수를 확인하세요.")
-
-    notifier_bot = next((b for b in bot_registry if getattr(b, "name", "") == "똑똑한 너구리"), None)
-    if notifier_bot is None and bot_registry:
-        notifier_bot = bot_registry[0]
-
-    if notifier_bot is not None:
-        def notify_downgrade(label: str, old_model: str, new_model: str):
-            text = f"[{label}] 모델이 하위 등급으로 전환됐습니다.\n{old_model} → {new_model}"
-            if not ALLOWED_CHAT_IDS:
-                logger.warning(f"알림 받을 chat_id가 없습니다(ALLOWED_CHAT_IDS 미설정): {text}")
-                return
-            for chat_id in ALLOWED_CHAT_IDS:
-                try:
-                    notifier_bot.bot.send_message(chat_id, text)
-                except Exception as e:
-                    logger.warning(f"다운그레이드 알림 전송 실패(chat_id={chat_id}): {e}")
-
-        for router in (translate_router, assistant_router, mail_router, casual_router, alarm_router):
-            if router is not None:
-                router.on_downgrade = notify_downgrade
 
     for t in threads:
         t.join()
