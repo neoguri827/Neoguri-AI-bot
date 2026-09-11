@@ -3,3 +3,4 @@ google-genai
 upstash-redis
 pandas
 openpyxl
+pypdf
