@@ -26,6 +26,8 @@ EXTRACTION_PROMPT = (
 GROUP_DEBOUNCE_SECONDS = 3.0
 MAX_AUTO_KB_MATCHES = 3
 MAX_KB_CHARS_PER_DOC = 12000
+SESSION_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60  # 2시간 이상 안 쓴 세션은 정리
+MAX_CACHED_SESSIONS = 200  # 혹시 몰라 걸어두는 상한선
 
 
 def extract_remember_name(caption: str, fallback_name: str) -> Optional[str]:
@@ -50,10 +52,29 @@ class MemoryGeminiBot:
         self.quick_commands = quick_commands or {}
         self.knowledge_store = knowledge_store
         self.user_sessions: Dict[int, Any] = {}
+        self.session_last_used: Dict[int, float] = {}
         self.search_enabled: Dict[int, bool] = {}
         self._group_lock = threading.Lock()
         self._pending_groups: Dict[str, dict] = {}
         self._register_handlers()
+
+    def _forget_session(self, chat_id: int):
+        self.user_sessions.pop(chat_id, None)
+        self.session_last_used.pop(chat_id, None)
+
+    def _evict_stale_sessions(self):
+        now = time.time()
+        stale = [cid for cid, ts in self.session_last_used.items() if now - ts > SESSION_IDLE_TIMEOUT_SECONDS]
+        for cid in stale:
+            self._forget_session(cid)
+            logger.info(f"[{self.name}] 장시간 미사용 세션 정리: Chat ID {cid}")
+
+        if len(self.user_sessions) > MAX_CACHED_SESSIONS:
+            oldest_first = sorted(self.session_last_used.items(), key=lambda kv: kv[1])
+            excess = len(self.user_sessions) - MAX_CACHED_SESSIONS
+            for cid, _ in oldest_first[:excess]:
+                self._forget_session(cid)
+                logger.info(f"[{self.name}] 세션 상한 초과로 정리: Chat ID {cid}")
 
     def _build_config(self, chat_id: int, search_on: bool) -> types.GenerateContentConfig:
         instruction = self.base_instruction
@@ -114,14 +135,18 @@ class MemoryGeminiBot:
         return [types.Content(role=r["role"], parts=[types.Part(text=r["content"])]) for r in rows]
 
     def _get_chat_session(self, chat_id: int):
+        self.session_last_used[chat_id] = time.time()
         if chat_id not in self.user_sessions:
+            self._evict_stale_sessions()
             history = self._history_to_genai_format(self.store.load_history(chat_id))
             search_on = self.search_enabled.get(chat_id, False)
             config = self._build_config(chat_id, search_on)
             self.user_sessions[chat_id] = self.router.create_chat(history=history, config=config)
+            self.session_last_used[chat_id] = time.time()
             logger.info(
                 f"[{self.name}] 세션 생성/복원: Chat ID {chat_id} "
-                f"(기록 {len(history)}건, 검색={'ON' if search_on else 'OFF'}, 모델={self.router.model_name})"
+                f"(기록 {len(history)}건, 검색={'ON' if search_on else 'OFF'}, 모델={self.router.model_name}, "
+                f"캐시된 세션 수={len(self.user_sessions)})"
             )
         return self.user_sessions[chat_id]
 
@@ -141,7 +166,7 @@ class MemoryGeminiBot:
                         raise last_err
                     if self.router.advance_model():
                         switches_used += 1
-                        self.user_sessions.pop(chat_id, None)
+                        self._forget_session(chat_id)
                         transient_left = max_transient_retries
                         continue
                     raise last_err
@@ -298,7 +323,7 @@ class MemoryGeminiBot:
                 except Exception as e:
                     logger.error(f"[{self.name}] 그룹 파일 저장 실패: {e}", exc_info=True)
                     failed.append(getattr(msg.document, "file_name", "알 수 없는 파일") if msg.content_type == 'document' else "사진")
-            self.user_sessions.pop(chat_id, None)
+            self._forget_session(chat_id)
             result = "📚 저장 완료:\n" + "\n".join(f"- {n}" for n in saved)
             if failed:
                 result += "\n\n⚠️ 저장 실패:\n" + "\n".join(f"- {n}" for n in failed)
@@ -339,7 +364,7 @@ class MemoryGeminiBot:
                     return
                 text = self._extract_kb_text(file_name, file_bytes, mime_type)
                 self.knowledge_store.add(chat_id, remember_name, text)
-                self.user_sessions.pop(chat_id, None)
+                self._forget_session(chat_id)
                 self._reply(chat_id, f"📚 '{remember_name}' 자료로 저장했습니다. 앞으로 관련 질문에 자동으로 참고합니다.", edit_message_id=placeholder.message_id)
                 return
 
@@ -390,7 +415,7 @@ class MemoryGeminiBot:
                 return
             enable = parts[1].lower() == 'on'
             self.search_enabled[chat_id] = enable
-            self.user_sessions.pop(chat_id, None)
+            self._forget_session(chat_id)
             self.bot.send_message(chat_id, f"🔍 검색 기능을 {'켰습니다' if enable else '껐습니다'}.")
 
         @self.bot.message_handler(commands=['kb'])
@@ -423,7 +448,7 @@ class MemoryGeminiBot:
                 self.bot.send_message(chat_id, "사용법: /forget 문서이름")
                 return
             if self.knowledge_store.remove(chat_id, name):
-                self.user_sessions.pop(chat_id, None)
+                self._forget_session(chat_id)
                 self.bot.send_message(chat_id, f"🗑 '{name}' 자료를 삭제했습니다.")
             else:
                 self.bot.send_message(chat_id, f"'{name}'이라는 이름의 저장된 자료를 찾지 못했습니다. /kb로 목록을 확인하세요.")
@@ -464,7 +489,7 @@ class MemoryGeminiBot:
             if command == '/start':
                 self.bot.send_message(chat_id, self.welcome_message, parse_mode='Markdown')
             elif command == '/reset':
-                self.user_sessions.pop(chat_id, None)
+                self._forget_session(chat_id)
                 self.store.clear(chat_id)
                 self.bot.send_message(chat_id, "🔄 대화 기록이 초기화되었습니다. (영구 참고자료는 유지됩니다)")
 
