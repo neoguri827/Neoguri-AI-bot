@@ -65,7 +65,6 @@ TRANSLATOR_BOT_DEFS = [
     },
 ]
 
-
 class NeoguriTranslatorBot:
     def __init__(self, name: str, token: str, instruction: str, router: GeminiRouter):
         self.name = name
@@ -78,11 +77,19 @@ class NeoguriTranslatorBot:
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
         def handle_myid(message: Message):
-            self.bot.send_message(message.chat.id, f"🆔 chat_id: {message.chat.id}")
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            self.bot.send_message(chat_id, f"🆔 chat_id: {chat_id}")
 
         @self.bot.message_handler(commands=['uptime'])
         def handle_uptime(message: Message):
-            self.bot.send_message(message.chat.id, f"⏱ 서버 연속 가동 시간: {get_uptime_str()}")
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            self.bot.send_message(chat_id, f"⏱ 서버 연속 가동 시간: {get_uptime_str()}")
 
         @self.bot.message_handler(commands=['tokens'])
         def handle_tokens_toggle(message: Message):
@@ -101,20 +108,32 @@ class NeoguriTranslatorBot:
 
         @self.bot.message_handler(commands=['start'])
         def handle_start(message: Message):
-            self.bot.send_message(message.chat.id, f"{self.name} 준비되었습니다. 번역할 문장을 보내주세요.")
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            self.bot.send_message(chat_id, f"{self.name} 준비되었습니다. 번역할 문장을 보내주세요.")
 
         @self.bot.message_handler(commands=['reset'])
         def handle_reset(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
             self.bot.send_message(
-                message.chat.id,
+                chat_id,
                 "ℹ️ 이 봇은 매번 새로운 문장을 독립적으로 번역하기 때문에, "
                 "따로 초기화할 대화 기록이 없습니다. 그냥 이어서 번역할 문장을 보내주세요."
             )
 
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
             self.bot.send_message(
-                message.chat.id,
+                chat_id,
                 "사용법: 문장을 그대로 보내면 번역문만 반환합니다.\n"
                 "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 꺼짐)\n"
                 "/myid - 내 chat_id 확인\n"

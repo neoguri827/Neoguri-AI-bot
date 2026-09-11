@@ -50,7 +50,6 @@ AUTO_RESET_NOTICE_TEXT = (
     "이어서 질문해 주세요. (영구 참고자료는 유지됩니다)"
 )
 
-
 def extract_remember_name(caption: str, fallback_name: str) -> Tuple[Optional[str], bool]:
     caption = caption.strip()
     if not caption.startswith(REMEMBER_TRIGGER):
@@ -59,7 +58,6 @@ def extract_remember_name(caption: str, fallback_name: str) -> Tuple[Optional[st
     if rest:
         return rest, False
     return fallback_name, True
-
 
 class MemoryGeminiBot:
     def __init__(self, name: str, token: str, router: GeminiRouter, store: ChatHistoryStore,
@@ -241,12 +239,18 @@ class MemoryGeminiBot:
                 if self.router.is_retryable_model_error(e):
                     if switches_used >= self.router.MAX_MODEL_SWITCHES_PER_CALL:
                         logger.error(f"[{self.name}] 모델 전환 한도 초과, 포기")
+                        # 이 세션은 실패가 확인된 모델에 그대로 묶여 있으므로, 다음 메시지에서
+                        # 새 모델로 세션을 재생성하도록 캐시를 비운다.
+                        self._forget_session(chat_id)
                         raise last_err
                     if self.router.advance_model():
                         switches_used += 1
                         self._forget_session(chat_id)
                         transient_left = max_transient_retries
                         continue
+                    # 더 이상 전환할 모델이 없는 경우에도 동일하게 세션을 비워,
+                    # 죽은 모델에 계속 묶이지 않게 한다.
+                    self._forget_session(chat_id)
                     raise last_err
                 transient_left -= 1
                 if transient_left < 0:
@@ -502,11 +506,19 @@ class MemoryGeminiBot:
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
         def handle_myid(message: Message):
-            self.bot.send_message(message.chat.id, f"🆔 chat_id: {message.chat.id}")
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            self.bot.send_message(chat_id, f"🆔 chat_id: {chat_id}")
 
         @self.bot.message_handler(commands=['uptime'])
         def handle_uptime(message: Message):
-            self.bot.send_message(message.chat.id, f"⏱ 서버 연속 가동 시간: {get_uptime_str()}")
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            self.bot.send_message(chat_id, f"⏱ 서버 연속 가동 시간: {get_uptime_str()}")
 
         @self.bot.message_handler(commands=['model'])
         def handle_model(message: Message):
@@ -584,6 +596,10 @@ class MemoryGeminiBot:
 
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
             quick_list = "\n".join(f"/{c} - {t[:28]}..." for c, t in self.quick_commands.items())
             quick_section = f"\n\n[전문 분야 단축 명령어]\n{quick_list}" if quick_list else ""
             kb_section = (
@@ -597,7 +613,7 @@ class MemoryGeminiBot:
                 if self.knowledge_store else ""
             )
             self.bot.send_message(
-                message.chat.id,
+                chat_id,
                 f"{self.welcome_message}\n\n"
                 "/search on|off - 최신 정보 검색 기능 켜기/끄기 (기본 꺼짐)\n"
                 "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 켜짐)\n"

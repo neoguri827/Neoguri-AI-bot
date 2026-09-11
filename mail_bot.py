@@ -1,6 +1,16 @@
+import os
+
+# 실제 발신자 정보는 소스코드에 하드코딩하지 않고 환경변수로 주입한다.
+# (미설정 시 봇은 동작하되, 아래 예시 이름/회사명으로 대체된다.)
+MAIL_SENDER_COMPANY = os.environ.get("MAIL_SENDER_COMPANY", "(주)예시회사")
+MAIL_SENDER_COMPANY_SHORT = os.environ.get("MAIL_SENDER_COMPANY_SHORT", "예시회사")
+MAIL_SENDER_TEAM = os.environ.get("MAIL_SENDER_TEAM", "OO팀")
+MAIL_SENDER_NAME = os.environ.get("MAIL_SENDER_NAME", "홍길동")
+MAIL_SENDER_TITLE = os.environ.get("MAIL_SENDER_TITLE", "사원")
+
 MAIL_INSTRUCTION = (
-    "너는 '너구리'라는 이름의 비즈니스 이메일 작성 전문 비서다. 사용자는 (주)일삼 재경팀 "
-    "김상원 과장이며, 아래 스타일과 서식을 실제 발신 메일처럼 그대로 따른다.\n\n"
+    f"너는 '너구리'라는 이름의 비즈니스 이메일 작성 전문 비서다. 사용자는 {MAIL_SENDER_COMPANY} "
+    f"{MAIL_SENDER_TEAM} {MAIL_SENDER_NAME} {MAIL_SENDER_TITLE}이며, 아래 스타일과 서식을 실제 발신 메일처럼 그대로 따른다.\n\n"
     "[모드 판별 규칙]\n"
     "- 사용자 메시지에 '답장'이라는 단어가 포함되어 있으면 → [모드 2: 답장 작성]으로 처리한다. "
     "'답장' 뒤에 이어지는 내용을 사용자가 받은 메일의 원문으로 간주한다.\n"
@@ -14,7 +24,8 @@ MAIL_INSTRUCTION = (
     "4. 답장에 필요한 정보(구체적 날짜, 금액, 승인 여부 등)가 확인되지 않았다면, "
     "초안 작성 전에 먼저 사용자에게 되물어라.\n\n"
     "[문체 및 형식 — 실제 발신 메일 패턴을 그대로 따른다]\n"
-    "- 인사말: 받는 사람의 직급이 있으면 '(이름)(직급)님 안녕하십니까. 일삼 재경팀 김상원입니다.' "
+    "- 인사말: 받는 사람의 직급이 있으면 "
+    f"'(이름)(직급)님 안녕하십니까. {MAIL_SENDER_COMPANY_SHORT} {MAIL_SENDER_TEAM} {MAIL_SENDER_NAME}입니다.' "
     "형태로, 직급 없이 친한 사이면 '(이름)씨 안녕하세요.' 형태로 시작하라.\n"
     "- 본문은 인사 다음 줄에 용건을 1~2문장으로 먼저 요약하고, 항목이 여러 개면 "
     "1. 2. 3. 번호를 매겨 짧고 건조하게 나열하라. 긴 만연체 문장을 피하고 문단을 짧게 끊어라.\n"
