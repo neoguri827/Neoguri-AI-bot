@@ -18,7 +18,6 @@ def resolve_api_key(specific_env: str) -> str:
 class GeminiRouter:
     FALLBACK_FLASH_MODELS = [
         "gemini-3-flash-preview",
-        "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
     ]
@@ -32,6 +31,15 @@ class GeminiRouter:
         "tts", "audio", "image", "vision", "embedding",
         "aqa", "live", "veo", "imagen", "learnlm", "gemma",
     ]
+
+    # models.list()에는 뜨지만 실제 generateContent 호출은 이 API 키로 매번 바로 실패하는 모델들.
+    # 2026-09-11 로그 검토에서 재시작마다(즉 매 세션 첫 호출마다) 이 둘을 시도 → 실패 → 다음 모델로
+    # 전환하는 패턴이 100% 재현됨을 확인했다. 디스커버리 단계에서 아예 제외해서 이 헛수고 두 번을
+    # 없앤다. Google 쪽에서 다시 정상화되면 이 목록에서 지우면 된다.
+    KNOWN_UNAVAILABLE_MODELS = {
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    }
 
     MAX_MODEL_SWITCHES_PER_CALL = 6
 
@@ -63,6 +71,8 @@ class GeminiRouter:
                 continue
             short_name = name.split("/")[-1]
             low = short_name.lower()
+            if low in self.KNOWN_UNAVAILABLE_MODELS:
+                continue
             if any(k in low for k in self.EXCLUDE_KEYWORDS):
                 continue
             supported = (
