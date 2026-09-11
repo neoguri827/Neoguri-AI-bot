@@ -9,7 +9,7 @@ import pandas as pd
 from telebot.types import Message
 from google.genai import types
 
-from common import is_allowed, split_message, get_uptime_str
+from common import is_allowed, split_message, get_uptime_str, format_token_usage
 from router import GeminiRouter
 from store import ChatHistoryStore, KnowledgeStore
 
@@ -26,8 +26,9 @@ EXTRACTION_PROMPT = (
 GROUP_DEBOUNCE_SECONDS = 3.0
 MAX_AUTO_KB_MATCHES = 3
 MAX_KB_CHARS_PER_DOC = 12000
-SESSION_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60  # 2시간 이상 안 쓴 세션은 정리
-MAX_CACHED_SESSIONS = 200  # 혹시 몰라 걸어두는 상한선
+SESSION_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
+MAX_CACHED_SESSIONS = 200
+MIN_LOCAL_PDF_TEXT_LENGTH = 100
 
 
 def extract_remember_name(caption: str, fallback_name: str) -> Optional[str]:
@@ -54,6 +55,7 @@ class MemoryGeminiBot:
         self.user_sessions: Dict[int, Any] = {}
         self.session_last_used: Dict[int, float] = {}
         self.search_enabled: Dict[int, bool] = {}
+        self.show_tokens: Dict[int, bool] = {}
         self._group_lock = threading.Lock()
         self._pending_groups: Dict[str, dict] = {}
         self._register_handlers()
@@ -218,6 +220,20 @@ class MemoryGeminiBot:
             parts.append(f"[시트: {sheet_name}]\n{df.to_csv(index=False)}")
         return "\n\n".join(parts)
 
+    def _pdf_to_text_local(self, file_bytes: bytes) -> str:
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(file_bytes))
+            parts = []
+            for i, page in enumerate(reader.pages):
+                text = (page.extract_text() or "").strip()
+                if text:
+                    parts.append(f"[페이지 {i + 1}]\n{text}")
+            return "\n\n".join(parts)
+        except Exception as e:
+            logger.warning(f"[{self.name}] 로컬 PDF 텍스트 추출 실패: {e}")
+            return ""
+
     def _download_file_payload(self, message: Message):
         if message.content_type == 'document':
             file_name = message.document.file_name or "문서"
@@ -234,6 +250,14 @@ class MemoryGeminiBot:
     def _extract_kb_text(self, file_name: str, file_bytes: bytes, mime_type: str) -> str:
         if file_name.lower().endswith((".xlsx", ".xls")):
             return self._excel_to_text(file_bytes)
+
+        if file_name.lower().endswith(".pdf") or mime_type == "application/pdf":
+            local_text = self._pdf_to_text_local(file_bytes)
+            if len(local_text.strip()) >= MIN_LOCAL_PDF_TEXT_LENGTH:
+                logger.info(f"[{self.name}] PDF 텍스트를 로컬에서 무료로 추출함 (Gemini 미사용)")
+                return local_text
+            logger.info(f"[{self.name}] PDF에서 추출 가능한 텍스트가 부족함(스캔본 추정), Gemini로 대체 추출")
+
         response = self.router.generate(
             contents=[types.Part.from_bytes(data=file_bytes, mime_type=mime_type), EXTRACTION_PROMPT]
         )
@@ -246,7 +270,10 @@ class MemoryGeminiBot:
         try:
             response = self._send_with_retry(chat_id, model_prompt)
             reply_text = response.text or EMPTY_REPLY_FALLBACK
-            self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
+            display_text = reply_text
+            if self.show_tokens.get(chat_id, True):
+                display_text += format_token_usage(response)
+            self._reply(chat_id, display_text, edit_message_id=placeholder.message_id)
             self._save_history_safely(chat_id, history_label, reply_text)
         except Exception as e:
             logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
@@ -375,7 +402,10 @@ class MemoryGeminiBot:
 
             response = self._send_with_retry(chat_id, content_parts)
             reply_text = response.text or EMPTY_REPLY_FALLBACK
-            self._reply(chat_id, reply_text, edit_message_id=placeholder.message_id)
+            display_text = reply_text
+            if self.show_tokens.get(chat_id, True):
+                display_text += format_token_usage(response)
+            self._reply(chat_id, display_text, edit_message_id=placeholder.message_id)
             self._save_history_safely(chat_id, f"[파일 첨부] {caption or '분석 요청'}", reply_text)
         except Exception as e:
             logger.error(f"[{self.name}] 파일 처리 예외 (Chat ID: {chat_id}): {e}", exc_info=True)
@@ -417,6 +447,21 @@ class MemoryGeminiBot:
             self.search_enabled[chat_id] = enable
             self._forget_session(chat_id)
             self.bot.send_message(chat_id, f"🔍 검색 기능을 {'켰습니다' if enable else '껐습니다'}.")
+
+        @self.bot.message_handler(commands=['tokens'])
+        def handle_tokens_toggle(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            parts = message.text.split()
+            if len(parts) < 2 or parts[1].lower() not in ('on', 'off'):
+                current = "켜짐" if self.show_tokens.get(chat_id, True) else "꺼짐"
+                self.bot.send_message(chat_id, f"현재 토큰 사용량 표시: {current}\n사용법: /tokens on 또는 /tokens off")
+                return
+            enable = parts[1].lower() == 'on'
+            self.show_tokens[chat_id] = enable
+            self.bot.send_message(chat_id, f"🔢 토큰 사용량 표시를 {'켰습니다' if enable else '껐습니다'}.")
 
         @self.bot.message_handler(commands=['kb'])
         def handle_kb_list(message: Message):
@@ -462,7 +507,6 @@ class MemoryGeminiBot:
                 "파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적으면 영구 저장됩니다 (reset해도 안 사라짐).\n"
                 "여러 파일을 한꺼번에 보낼 때도, 그중 아무 파일에나 캡션으로 '저장해줘'를 붙이면 전부 저장됩니다.\n"
                 "저장된 자료는 평소엔 이름만 기억하고 있다가, 질문에 관련 이름/키워드가 나오면 그때만 불러와서 답합니다.\n"
-                "이때는 '📚 자료를 참고해서 답변 준비중...'이라고 안내가 뜹니다.\n"
                 "/kb - 저장된 자료 목록 확인\n"
                 "/forget 문서이름 - 저장된 자료 삭제"
                 if self.knowledge_store else ""
@@ -471,6 +515,7 @@ class MemoryGeminiBot:
                 message.chat.id,
                 f"{self.welcome_message}\n\n"
                 "/search on|off - 최신 정보 검색 기능 켜기/끄기 (기본 꺼짐)\n"
+                "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 켜짐)\n"
                 "/reset - 대화 기록 초기화\n"
                 "/model - 현재 사용 모델 확인\n"
                 "/uptime - 서버 연속 가동 시간 확인\n"
