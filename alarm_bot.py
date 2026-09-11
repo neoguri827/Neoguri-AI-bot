@@ -68,27 +68,35 @@ class NeoguriAlarmBot(TelegramBotBase):
         self._register_handlers()
 
     def _build_briefing(self) -> str:
-        response = self.router.generate(contents=_build_briefing_prompt(), config=self.config)
-        log_token_usage(self.name, response)
-        self._log_grounding_info(response)
+        """가끔 모델이 지시를 어기고 검색 도구를 안 부른 채 답하는 경우가 있다(관찰상 10회 중
+        1회 정도). 그러면 ALARM_INSTRUCTION대로 전부 '확인 불가'만 나오는 빈 브리핑이 되므로,
+        검색 근거가 없으면 최대 2번까지 다시 시도한다."""
+        response = None
+        for attempt in range(3):
+            response = self.router.generate(contents=_build_briefing_prompt(), config=self.config)
+            log_token_usage(self.name, response)
+            if self._log_grounding_info(response):
+                break
+            if attempt < 2:
+                logger.warning(f"[{self.name}] 검색 없이 응답이 와서 재시도합니다 ({attempt + 1}/3)")
         return response.text or "정보를 가져오지 못했습니다."
 
-    def _log_grounding_info(self, response):
+    def _log_grounding_info(self, response) -> bool:
         """실제로 구글 검색을 근거로 답했는지, 어떤 검색어/출처를 썼는지 로그로 남긴다.
         브리핑 내용이 부정확하다는 의심이 들 때 이 로그로 원인(검색 미실행 vs 검색은 했지만
-        결과 해석 오류)을 구분할 수 있다."""
+        결과 해석 오류)을 구분할 수 있다. 반환값은 이번 응답이 검색 근거를 갖고 있는지 여부."""
         try:
             candidates = getattr(response, "candidates", None) or []
             if not candidates:
                 logger.warning(f"[{self.name}] 응답에 candidate가 없어 검색 근거를 확인할 수 없습니다 (모델: {self.router.model_name})")
-                return
+                return False
             metadata = getattr(candidates[0], "grounding_metadata", None)
             if not metadata:
                 logger.warning(
                     f"[{self.name}] 이번 응답은 구글 검색 없이 생성됨(grounding_metadata 없음) — "
                     f"모델이 검색 도구를 호출하지 않고 답했을 가능성이 높습니다 (모델: {self.router.model_name})"
                 )
-                return
+                return False
             queries = list(getattr(metadata, "web_search_queries", None) or [])
             sources = []
             for chunk in (getattr(metadata, "grounding_chunks", None) or []):
@@ -102,8 +110,10 @@ class NeoguriAlarmBot(TelegramBotBase):
                 f"[{self.name}] 검색 근거 확인 (모델: {self.router.model_name}) — "
                 f"검색어: {queries}, 출처 {len(sources)}건: {sources[:5]}"
             )
+            return True
         except Exception as e:
             logger.warning(f"[{self.name}] 검색 근거 로깅 실패: {e}")
+            return False
 
     def _broadcast(self):
         if not ALLOWED_CHAT_IDS:

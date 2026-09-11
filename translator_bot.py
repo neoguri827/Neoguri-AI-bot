@@ -43,13 +43,6 @@ TRANSLATOR_BOT_DEFS = [
             "한국어→격식 있는 베트남어로, 베트남어→한국어 존댓말(합니다체)로 번역하라."
         ),
     },
-    {
-        "name": "너구리_태국", "token_env": "TELEGRAM_TOKEN_TH",
-        "instruction": (
-            f"너는 한국어-태국어 양방향 번역 엔진이다. {TRANSLATOR_COMMON_RULE}\n"
-            "한국어→격식 있는 태국어(공손한 어미 ครับ/ค่ะ)로, 태국어→한국어 존댓말(합니다체)로 번역하라."
-        ),
-    },
 ]
 
 class NeoguriTranslatorBot(TelegramBotBase):

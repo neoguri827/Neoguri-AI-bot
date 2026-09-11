@@ -1,6 +1,4 @@
 import json
-import time
-import secrets
 from typing import Dict, List, Optional
 from upstash_redis import Redis
 
@@ -119,44 +117,6 @@ class UsageStore:
             for bot_name, count in self.get_day(date_str).items():
                 totals[bot_name] = totals.get(bot_name, 0) + count
         return totals
-
-
-class ExpenseStore:
-    """채팅방(chat_id)별 지출 기록을 Upstash 해시에 저장한다.
-    필드 키는 밀리초 타임스탬프라 자동으로 고유하고, 조회 시 자연스럽게 최신순 정렬이 가능하다."""
-
-    def __init__(self, redis_url: str, redis_token: str, namespace: str = "expense"):
-        self.redis = Redis(url=redis_url, token=redis_token)
-        self.namespace = namespace
-
-    def _key(self, chat_id: int) -> str:
-        return f"{self.namespace}:{chat_id}"
-
-    def add(self, chat_id: int, record: Dict) -> str:
-        # 밀리초 타임스탬프만으로는 같은 순간에 두 건이 들어오면 충돌해서 하나가 덮어써질 수
-        # 있으므로(예: 여러 파일을 빠르게 연달아 보낼 때), 짧은 랜덤 접미사로 유일성을 보장한다.
-        entry_id = f"{int(time.time() * 1000)}-{secrets.token_hex(3)}"
-        self.redis.hset(self._key(chat_id), entry_id, json.dumps(record, ensure_ascii=False))
-        return entry_id
-
-    def remove(self, chat_id: int, entry_id: str) -> bool:
-        removed = self.redis.hdel(self._key(chat_id), entry_id)
-        return bool(removed)
-
-    def list_all(self, chat_id: int) -> List[Dict]:
-        raw = self.redis.hgetall(self._key(chat_id)) or {}
-        entries = []
-        for entry_id, value in raw.items():
-            try:
-                record = json.loads(value)
-            except Exception:
-                continue
-            record["id"] = entry_id
-            entries.append(record)
-        return entries
-
-    def clear(self, chat_id: int):
-        self.redis.delete(self._key(chat_id))
 
 
 class AlarmScheduleStore:
