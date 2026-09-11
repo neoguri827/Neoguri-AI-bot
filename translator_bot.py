@@ -3,7 +3,7 @@ import telebot
 from telebot.types import Message
 from google.genai import types
 
-from common import is_allowed, get_uptime_str
+from common import TelegramBotBase
 from router import GeminiRouter
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ TRANSLATOR_BOT_DEFS = [
     },
 ]
 
-class NeoguriTranslatorBot:
+class NeoguriTranslatorBot(TelegramBotBase):
     def __init__(self, name: str, token: str, instruction: str, router: GeminiRouter):
         self.name = name
         self.bot = telebot.TeleBot(token, threaded=False)
@@ -61,34 +61,19 @@ class NeoguriTranslatorBot:
         self._register_handlers()
 
     def _register_handlers(self):
-        @self.bot.message_handler(commands=['myid'])
-        def handle_myid(message: Message):
-            # ALLOWED_CHAT_IDS 등록 전에도 본인 chat_id를 확인할 수 있어야 하므로
-            # 이 명령만 is_allowed 검사를 우회한다.
-            chat_id = message.chat.id
-            self.bot.send_message(chat_id, f"chat_id: {chat_id}")
-
-        @self.bot.message_handler(commands=['uptime'])
-        def handle_uptime(message: Message):
-            chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
-                return
-            self.bot.send_message(chat_id, f"서버 연속 가동 시간: {get_uptime_str()}")
+        self._register_common_handlers()
 
         @self.bot.message_handler(commands=['start'])
         def handle_start(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             self.bot.send_message(chat_id, f"{self.name} 준비되었습니다. 번역할 문장을 보내주세요.")
 
         @self.bot.message_handler(commands=['reset'])
         def handle_reset(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             self.bot.send_message(
                 chat_id,
@@ -99,8 +84,7 @@ class NeoguriTranslatorBot:
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             self.bot.send_message(
                 chat_id,
@@ -113,8 +97,7 @@ class NeoguriTranslatorBot:
         @self.bot.message_handler(func=lambda m: True, content_types=['text'])
         def handle_text(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             self.bot.send_chat_action(chat_id, 'typing')
             try:

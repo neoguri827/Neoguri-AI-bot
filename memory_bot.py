@@ -9,7 +9,7 @@ import pandas as pd
 from telebot.types import Message
 from google.genai import types
 
-from common import is_allowed, split_message, get_uptime_str, format_token_usage
+from common import split_message, format_token_usage, TelegramBotBase
 from router import GeminiRouter
 from store import ChatHistoryStore, KnowledgeStore
 
@@ -66,9 +66,9 @@ def extract_remember_name(caption: str, fallback_name: str) -> Tuple[Optional[st
         return rest, False
     return fallback_name, True
 
-class MemoryGeminiBot:
+class MemoryGeminiBot(TelegramBotBase):
     def __init__(self, name: str, token: str, router: GeminiRouter, store: ChatHistoryStore,
-                 base_instruction: str, welcome_message: str,
+                 base_instruction: Union[str, Dict[str, str]], welcome_message: str,
                  quick_commands: Optional[Dict[str, str]] = None,
                  knowledge_store: Optional[KnowledgeStore] = None,
                  enable_token_usage: bool = False,
@@ -138,8 +138,15 @@ class MemoryGeminiBot:
             i += 1
         return f"{base_name} ({i})"
 
-    def _build_config(self, chat_id: int, search_on: bool) -> types.GenerateContentConfig:
-        instruction = self.base_instruction
+    def _resolve_instruction(self, tier: str) -> str:
+        """base_instruction이 등급별 dict({'flash': ..., 'pro': ...})면 해당 등급의 지시문을,
+        아니면(일반 str) 그 값을 그대로 쓴다. 일상 대화는 가볍게, 전문 질문만 무거운 지시문을 태운다."""
+        if isinstance(self.base_instruction, dict):
+            return self.base_instruction.get(tier) or self.base_instruction.get("flash") or next(iter(self.base_instruction.values()))
+        return self.base_instruction
+
+    def _build_config(self, chat_id: int, search_on: bool, tier: str = "flash") -> types.GenerateContentConfig:
+        instruction = self._resolve_instruction(tier)
         if self.knowledge_store:
             names = self.knowledge_store.list_names(chat_id)
             if names:
@@ -210,7 +217,7 @@ class MemoryGeminiBot:
             self._evict_stale_sessions()
             history = self._history_to_genai_format(self.store.load_history(chat_id, limit=HISTORY_LOAD_LIMIT))
             search_on = self.search_enabled.get(chat_id, False)
-            config = self._build_config(chat_id, search_on)
+            config = self._build_config(chat_id, search_on, tier)
             self.user_sessions[chat_id] = self.router.create_chat(history=history, config=config, tier=tier)
             self.session_tier[chat_id] = tier
             self.session_last_used[chat_id] = time.time()
@@ -435,8 +442,7 @@ class MemoryGeminiBot:
     def _make_quick_command_handler(self, cmd_name: str, template: str):
         def handler(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             extra = message.text.partition(' ')[2].strip()
             base_text = template + (f"\n\n[추가 참고 사항]: {extra}" if extra else "")
@@ -471,8 +477,7 @@ class MemoryGeminiBot:
         if not group:
             return
         chat_id = group["chat_id"]
-        if not is_allowed(chat_id):
-            self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+        if not self._guard(chat_id):
             return
 
         caption = (group["caption"] or "").strip()
@@ -522,8 +527,7 @@ class MemoryGeminiBot:
 
     def _handle_single_file(self, message: Message):
         chat_id = message.chat.id
-        if not is_allowed(chat_id):
-            self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+        if not self._guard(chat_id):
             return
 
         caption = message.caption or ""
@@ -580,26 +584,12 @@ class MemoryGeminiBot:
             )
 
     def _register_handlers(self):
-        @self.bot.message_handler(commands=['myid'])
-        def handle_myid(message: Message):
-            # ALLOWED_CHAT_IDS 등록 전에도 본인 chat_id를 확인할 수 있어야 하므로
-            # 이 명령만 is_allowed 검사를 우회한다.
-            chat_id = message.chat.id
-            self.bot.send_message(chat_id, f"chat_id: {chat_id}")
-
-        @self.bot.message_handler(commands=['uptime'])
-        def handle_uptime(message: Message):
-            chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
-                return
-            self.bot.send_message(chat_id, f"서버 연속 가동 시간: {get_uptime_str()}")
+        self._register_common_handlers()
 
         @self.bot.message_handler(commands=['model'])
         def handle_model(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             if self.complexity_classifier:
                 self.bot.send_message(
@@ -614,8 +604,7 @@ class MemoryGeminiBot:
         @self.bot.message_handler(commands=['search'])
         def handle_search_toggle(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             parts = message.text.split()
             if len(parts) < 2 or parts[1].lower() not in ('on', 'off'):
@@ -631,8 +620,7 @@ class MemoryGeminiBot:
             @self.bot.message_handler(commands=['tokens'])
             def handle_tokens_toggle(message: Message):
                 chat_id = message.chat.id
-                if not is_allowed(chat_id):
-                    self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+                if not self._guard(chat_id):
                     return
                 parts = message.text.split()
                 if len(parts) < 2 or parts[1].lower() not in ('on', 'off'):
@@ -646,8 +634,7 @@ class MemoryGeminiBot:
         @self.bot.message_handler(commands=['kb'])
         def handle_kb_list(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             if not self.knowledge_store:
                 self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
@@ -662,8 +649,7 @@ class MemoryGeminiBot:
         @self.bot.message_handler(commands=['forget'])
         def handle_forget(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             if not self.knowledge_store:
                 self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
@@ -681,8 +667,7 @@ class MemoryGeminiBot:
         @self.bot.message_handler(commands=['export'])
         def handle_export(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             if not self.knowledge_store:
                 self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
@@ -705,8 +690,7 @@ class MemoryGeminiBot:
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             quick_list = "\n".join(f"/{c} - {t[:28]}..." for c, t in self.quick_commands.items())
             quick_section = f"\n\n[전문 분야 단축 명령어]\n{quick_list}" if quick_list else ""
@@ -750,8 +734,7 @@ class MemoryGeminiBot:
         @self.bot.message_handler(commands=['start', 'reset'])
         def handle_commands(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             command = message.text.split()[0].lower()
             if command == '/start':
@@ -767,8 +750,7 @@ class MemoryGeminiBot:
         @self.bot.message_handler(func=lambda m: True, content_types=['text'])
         def handle_text(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             if self.awaiting_confirm.get(chat_id) and self._handle_continue_confirmation(chat_id, message.text):
                 return

@@ -6,7 +6,7 @@ import telebot
 from telebot.types import Message
 from google.genai import types
 
-from common import is_allowed, get_uptime_str, split_message, ALLOWED_CHAT_IDS
+from common import split_message, ALLOWED_CHAT_IDS, TelegramBotBase
 from router import GeminiRouter
 from store import AlarmScheduleStore
 
@@ -49,7 +49,7 @@ ALARM_WELCOME = (
 )
 
 
-class NeoguriAlarmBot:
+class NeoguriAlarmBot(TelegramBotBase):
     def __init__(self, name: str, token: str, router: GeminiRouter, schedule_store: AlarmScheduleStore,
                  check_interval_seconds: int = ALARM_CHECK_INTERVAL_SECONDS):
         self.name = name
@@ -137,26 +137,19 @@ class NeoguriAlarmBot:
             time.sleep(self.check_interval_seconds)
 
     def _register_handlers(self):
-        @self.bot.message_handler(commands=['myid'])
-        def handle_myid(message: Message):
-            # ALLOWED_CHAT_IDS 등록 전에도 본인 chat_id를 확인할 수 있어야 하므로
-            # 이 명령만 is_allowed 검사를 우회한다.
-            chat_id = message.chat.id
-            self.bot.send_message(chat_id, f"chat_id: {chat_id}")
+        self._register_common_handlers()
 
         @self.bot.message_handler(commands=['start'])
         def handle_start(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             self.bot.send_message(chat_id, ALARM_WELCOME)
 
         @self.bot.message_handler(commands=['now'])
         def handle_now(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             self.bot.send_chat_action(chat_id, 'typing')
             try:
@@ -167,19 +160,10 @@ class NeoguriAlarmBot:
                 logger.error(f"[{self.name}] 즉시 브리핑 실패 (Chat ID: {chat_id}): {e}", exc_info=True)
                 self.bot.send_message(chat_id, "정보를 가져오는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
 
-        @self.bot.message_handler(commands=['uptime'])
-        def handle_uptime(message: Message):
-            chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
-                return
-            self.bot.send_message(chat_id, f"서버 연속 가동 시간: {get_uptime_str()}")
-
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+            if not self._guard(chat_id):
                 return
             self.bot.send_message(
                 chat_id,

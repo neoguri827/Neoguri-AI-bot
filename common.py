@@ -87,6 +87,32 @@ def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
     return chunks
 
 
+class TelegramBotBase:
+    """모든 너구리 봇이 공통으로 쓰는 /myid, /uptime 명령과 사용자 인증 가드.
+    상속하는 쪽에서 self.bot(TeleBot 인스턴스)을 먼저 만들어둔 뒤 써야 한다."""
+
+    def _guard(self, chat_id: int) -> bool:
+        """허용된 사용자면 True, 아니면 안내 메시지를 보내고 False를 반환한다."""
+        if is_allowed(chat_id):
+            return True
+        self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+        return False
+
+    def _register_common_handlers(self):
+        @self.bot.message_handler(commands=['myid'])
+        def handle_myid(message):
+            # ALLOWED_CHAT_IDS 등록 전에도 본인 chat_id를 확인할 수 있어야 하므로
+            # 이 명령만 인증 검사를 우회한다.
+            self.bot.send_message(message.chat.id, f"chat_id: {message.chat.id}")
+
+        @self.bot.message_handler(commands=['uptime'])
+        def handle_uptime(message):
+            chat_id = message.chat.id
+            if not self._guard(chat_id):
+                return
+            self.bot.send_message(chat_id, f"서버 연속 가동 시간: {get_uptime_str()}")
+
+
 def run_forever(bot_obj, name: str):
     while True:
         try:
