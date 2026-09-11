@@ -5,7 +5,7 @@ from google import genai
 
 from common import start_health_server, run_forever, set_usage_store, logger
 from router import GeminiRouter, resolve_api_key
-from store import ChatHistoryStore, KnowledgeStore, AlarmScheduleStore, UsageStore
+from store import ChatHistoryStore, KnowledgeStore, AlarmScheduleStore, UsageStore, ExpenseStore
 from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS, classify_complexity
@@ -13,6 +13,7 @@ from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
 from puppy_bot import PUPPY_INSTRUCTION, PUPPY_WELCOME
 from alarm_bot import NeoguriAlarmBot
 from directory_bot import DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME
+from expense_bot import NeoguriExpenseBot
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
@@ -143,6 +144,20 @@ def main():
             logger.error(f"내선/비상연락 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
     else:
         logger.warning("TELEGRAM_TOKEN_DIRECTORY 없어서 내선/비상연락 너구리는 건너뜁니다.")
+
+    expense_token = _get_env_token("TELEGRAM_TOKEN_EXPENSE")
+    if expense_token:
+        try:
+            expense_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_EXPENSE")), label="가계부")
+            expense_store = ExpenseStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="expense")
+            bot_obj = NeoguriExpenseBot("가계부 너구리", expense_token, expense_router, expense_store)
+            t = threading.Thread(target=run_forever, args=(bot_obj, "가계부 너구리"), daemon=True)
+            t.start()
+            threads.append(t)
+        except Exception as e:
+            logger.error(f"가계부 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
+    else:
+        logger.warning("TELEGRAM_TOKEN_EXPENSE 없어서 가계부 너구리는 건너뜁니다.")
 
     if not threads:
         raise ValueError("실행 가능한 봇이 없습니다. 환경변수를 확인하세요.")
