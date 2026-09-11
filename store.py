@@ -91,3 +91,18 @@ class KnowledgeStore:
         if len(selected) < len(paragraphs):
             excerpt += f"\n...(질문과 관련된 문단만 발췌함, 전체 {len(content):,}자 중 {len(excerpt):,}자 표시)"
         return excerpt
+
+
+class AlarmScheduleStore:
+    """알람봇이 재배포·재시작을 겪어도 같은 시간대에 브리핑을 중복 발송하지 않도록
+    마지막으로 발송한 시간대(한국시간 기준 'YYYY-MM-DD HH')를 기억한다."""
+
+    def __init__(self, redis_url: str, redis_token: str, namespace: str):
+        self.redis = Redis(url=redis_url, token=redis_token)
+        self.key = f"{namespace}:last_sent_hour"
+
+    def get_last_sent_hour(self) -> Optional[str]:
+        return self.redis.get(self.key)
+
+    def set_last_sent_hour(self, hour_slot: str):
+        self.redis.set(self.key, hour_slot)

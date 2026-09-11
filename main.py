@@ -5,7 +5,7 @@ from google import genai
 
 from common import start_health_server, run_forever, logger
 from router import GeminiRouter, resolve_api_key
-from store import ChatHistoryStore, KnowledgeStore
+from store import ChatHistoryStore, KnowledgeStore, AlarmScheduleStore
 from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS, classify_complexity
@@ -110,7 +110,8 @@ def main():
     if alarm_token:
         try:
             alarm_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ALARM")), label="알람")
-            bot_obj = NeoguriAlarmBot("알람너구리", alarm_token, alarm_router)
+            alarm_schedule_store = AlarmScheduleStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="alarm")
+            bot_obj = NeoguriAlarmBot("알람너구리", alarm_token, alarm_router, alarm_schedule_store)
             t = threading.Thread(target=run_forever, args=(bot_obj, "알람너구리"), daemon=True)
             t.start()
             threads.append(t)

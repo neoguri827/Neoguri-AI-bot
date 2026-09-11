@@ -8,10 +8,11 @@ from google.genai import types
 
 from common import is_allowed, get_uptime_str, split_message, ALLOWED_CHAT_IDS
 from router import GeminiRouter
+from store import AlarmScheduleStore
 
 logger = logging.getLogger(__name__)
 
-ALARM_INTERVAL_SECONDS = 60 * 60  # 1시간마다 자동 브리핑
+ALARM_CHECK_INTERVAL_SECONDS = 60  # 정시가 됐는지 이 주기로 확인 (실제 발송은 시간대당 1회로 제한됨)
 
 KST = timezone(timedelta(hours=9))
 
@@ -42,18 +43,20 @@ def _build_briefing_prompt() -> str:
 
 ALARM_WELCOME = (
     "알람너구리 가동\n\n"
-    "매시간 자동으로 코스피, 나스닥, 원/달러 환율, 주요 뉴스 헤드라인을 정리해서 보내드립니다.\n"
+    "한국 시간(KST) 기준 매시 정각마다 자동으로 코스피, 나스닥, 원/달러 환율, 주요 뉴스 헤드라인을 "
+    "정리해서 보내드립니다 (시간당 최대 1회).\n"
     "지금 바로 확인하고 싶으면 /now를 입력하세요."
 )
 
 
 class NeoguriAlarmBot:
-    def __init__(self, name: str, token: str, router: GeminiRouter,
-                 interval_seconds: int = ALARM_INTERVAL_SECONDS):
+    def __init__(self, name: str, token: str, router: GeminiRouter, schedule_store: AlarmScheduleStore,
+                 check_interval_seconds: int = ALARM_CHECK_INTERVAL_SECONDS):
         self.name = name
         self.bot = telebot.TeleBot(token, threaded=False)
         self.router = router
-        self.interval_seconds = interval_seconds
+        self.schedule_store = schedule_store
+        self.check_interval_seconds = check_interval_seconds
         self.config = types.GenerateContentConfig(
             system_instruction=ALARM_INSTRUCTION,
             tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -111,13 +114,27 @@ class NeoguriAlarmBot:
                 except Exception as e:
                     logger.warning(f"[{self.name}] 브리핑 전송 실패(chat_id={chat_id}): {e}")
 
+    def _current_hour_slot(self) -> str:
+        return datetime.now(KST).strftime("%Y-%m-%d %H")
+
     def _scheduler_loop(self):
         while True:
             try:
-                self._broadcast()
+                current_slot = self._current_hour_slot()
+                try:
+                    last_slot = self.schedule_store.get_last_sent_hour()
+                except Exception as e:
+                    logger.warning(f"[{self.name}] 마지막 발송 시각 조회 실패, 이번 확인은 건너뜁니다: {e}")
+                    last_slot = current_slot  # 조회 실패 시 중복 발송 대신 이번 턴은 건너뛴다
+                if current_slot != last_slot:
+                    self._broadcast()
+                    try:
+                        self.schedule_store.set_last_sent_hour(current_slot)
+                    except Exception as e:
+                        logger.warning(f"[{self.name}] 마지막 발송 시각 저장 실패: {e}")
             except Exception as e:
                 logger.error(f"[{self.name}] 정기 브리핑 실패: {e}", exc_info=True)
-            time.sleep(self.interval_seconds)
+            time.sleep(self.check_interval_seconds)
 
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
