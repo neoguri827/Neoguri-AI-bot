@@ -59,7 +59,9 @@ class NeoguriAlarmBot(TelegramBotBase):
             system_instruction=ALARM_INSTRUCTION,
             tools=[types.Tool(google_search=types.GoogleSearch())],
             temperature=0.2,  # 시세·수치 브리핑이라 창의성보다 일관성이 중요
-            max_output_tokens=800,
+            # 검색 도구가 항상 켜져 있어 응답 전에 모델이 검색 계획을 세우는 데도 토큰을 쓴다.
+            # 너무 타이트하면 실제 답변이 나오기 전에 한도에 걸려 문장이 중간에 끊길 수 있어 여유 있게 잡는다.
+            max_output_tokens=1500,
         )
         self._scheduler_started = False
         self._scheduler_lock = threading.Lock()

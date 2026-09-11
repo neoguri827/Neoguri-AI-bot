@@ -71,7 +71,7 @@ def main():
                                        enable_session_confirmation=True,
                                        complexity_classifier=classify_complexity,
                                        temperature={"flash": 0.5, "pro": 0.2},
-                                       max_output_tokens={"flash": 1024, "pro": 4096})
+                                       max_output_tokens={"flash": 1536, "pro": 4096})
             t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
             t.start()
             threads.append(t)
@@ -103,7 +103,7 @@ def main():
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
             bot_obj = MemoryGeminiBot("개아", puppy_token, puppy_router, store,
                                        PUPPY_INSTRUCTION, PUPPY_WELCOME,
-                                       max_output_tokens=300)
+                                       max_output_tokens=800)
             t = threading.Thread(target=run_forever, args=(bot_obj, "개아"), daemon=True)
             t.start()
             threads.append(t)
@@ -135,7 +135,7 @@ def main():
             bot_obj = MemoryGeminiBot("내선/비상연락 너구리", directory_token, directory_router, store,
                                        DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME,
                                        knowledge_store=kb_store,
-                                       temperature=0.2, max_output_tokens=512)
+                                       temperature=0.2, max_output_tokens=1200)
             t = threading.Thread(target=run_forever, args=(bot_obj, "내선/비상연락 너구리"), daemon=True)
             t.start()
             threads.append(t)
