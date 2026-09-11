@@ -27,6 +27,8 @@ GROUP_DEBOUNCE_SECONDS = 3.0
 MAX_AUTO_KB_MATCHES = 2
 MAX_KB_CHARS_PER_DOC = 6000
 HISTORY_LOAD_LIMIT = 8
+SESSION_MAX_TURNS = 3           # 이 턴 수에 도달하면 계속 기억할지 사용자에게 확인
+SESSION_HARD_LIMIT_TURNS = 5    # 응답이 없어도 이 턴 수를 넘으면 강제로 정리 (안전장치)
 SESSION_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
 MAX_CACHED_SESSIONS = 200
 MIN_LOCAL_PDF_TEXT_LENGTH = 100
@@ -35,6 +37,18 @@ STOPWORDS = {
     "그리고", "그런데", "그래서", "하지만", "그러면", "저장해줘", "알려줘", "해줘",
     "것을", "것은", "인지", "입니다", "합니다", "있나요", "있어요", "얼마나", "무엇",
 }
+
+YES_KEYWORDS = {"응", "네", "예", "계속", "유지", "기억", "yes", "y", "ok", "오케이"}
+NO_KEYWORDS = {"아니오", "아니요", "아니", "지워", "삭제", "초기화", "reset", "no", "n", "그만"}
+
+CONTINUE_CONFIRM_TEXT = (
+    "💬 지금까지의 대화가 길어져서, 이 상태로 계속하면 질문마다 입력 토큰이 커집니다.\n"
+    "이전 내용을 계속 기억해서 이어갈까요? '응' 또는 '아니오'로 답해주세요."
+)
+AUTO_RESET_NOTICE_TEXT = (
+    "ℹ️ 대화가 많이 길어져 토큰 절약을 위해 오래된 맥락을 자동으로 정리했습니다. "
+    "이어서 질문해 주세요. (영구 참고자료는 유지됩니다)"
+)
 
 
 def extract_remember_name(caption: str, fallback_name: str) -> Tuple[Optional[str], bool]:
@@ -62,6 +76,9 @@ class MemoryGeminiBot:
         self.knowledge_store = knowledge_store
         self.user_sessions: Dict[int, Any] = {}
         self.session_last_used: Dict[int, float] = {}
+        self.session_turn_count: Dict[int, int] = {}
+        self.awaiting_confirm: Dict[int, bool] = {}
+        self.pending_notice: Dict[int, str] = {}
         self.search_enabled: Dict[int, bool] = {}
         self.show_tokens: Dict[int, bool] = {}
         self._group_lock = threading.Lock()
@@ -71,6 +88,9 @@ class MemoryGeminiBot:
     def _forget_session(self, chat_id: int):
         self.user_sessions.pop(chat_id, None)
         self.session_last_used.pop(chat_id, None)
+        self.session_turn_count.pop(chat_id, None)
+        self.awaiting_confirm.pop(chat_id, None)
+        self.pending_notice.pop(chat_id, None)
 
     def _evict_stale_sessions(self):
         now = time.time()
@@ -167,12 +187,44 @@ class MemoryGeminiBot:
             config = self._build_config(chat_id, search_on)
             self.user_sessions[chat_id] = self.router.create_chat(history=history, config=config)
             self.session_last_used[chat_id] = time.time()
+            self.session_turn_count[chat_id] = 0
             logger.info(
                 f"[{self.name}] 세션 생성/복원: Chat ID {chat_id} "
                 f"(기록 {len(history)}건, 검색={'ON' if search_on else 'OFF'}, 모델={self.router.model_name}, "
                 f"캐시된 세션 수={len(self.user_sessions)})"
             )
         return self.user_sessions[chat_id]
+
+    def _register_turn(self, chat_id: int):
+        count = self.session_turn_count.get(chat_id, 0) + 1
+        self.session_turn_count[chat_id] = count
+
+        if count >= SESSION_HARD_LIMIT_TURNS:
+            logger.info(f"[{self.name}] 세션 강제 한도 도달({count}턴), 자동으로 세션 재구성 (Chat ID {chat_id})")
+            self._forget_session(chat_id)
+            self.pending_notice[chat_id] = AUTO_RESET_NOTICE_TEXT
+            return
+
+        if count >= SESSION_MAX_TURNS and not self.awaiting_confirm.get(chat_id):
+            self.awaiting_confirm[chat_id] = True
+            self.pending_notice[chat_id] = CONTINUE_CONFIRM_TEXT
+            logger.info(f"[{self.name}] 세션 누적 컨텍스트 한도 도달({count}턴), 사용자에게 유지 여부 확인 (Chat ID {chat_id})")
+
+    def _handle_continue_confirmation(self, chat_id: int, text: str) -> bool:
+        normalized = text.strip().lower()
+        if any(k in normalized for k in NO_KEYWORDS):
+            self._forget_session(chat_id)
+            self.store.clear(chat_id)
+            self.bot.send_message(chat_id, "🔄 이전 대화 내용을 정리했습니다. 새로운 질문을 입력해 주세요. (영구 참고자료는 유지됩니다)")
+            return True
+        if any(k in normalized for k in YES_KEYWORDS):
+            self.awaiting_confirm.pop(chat_id, None)
+            self.session_turn_count[chat_id] = 0
+            self.bot.send_message(chat_id, "🔗 알겠습니다. 이전 내용을 계속 이어서 기억하겠습니다.")
+            return True
+        # 명확한 응답이 아니면 확인은 종료하고, 방금 메시지는 새 질문으로 처리(기본은 '계속 유지')
+        self.awaiting_confirm.pop(chat_id, None)
+        return False
 
     def _send_with_retry(self, chat_id: int, content: Union[str, list], max_transient_retries: int = 2):
         switches_used = 0
@@ -181,7 +233,9 @@ class MemoryGeminiBot:
         while True:
             chat_session = self._get_chat_session(chat_id)
             try:
-                return chat_session.send_message(content)
+                response = chat_session.send_message(content)
+                self._register_turn(chat_id)
+                return response
             except Exception as e:
                 last_err = e
                 if self.router.is_retryable_model_error(e):
@@ -297,6 +351,9 @@ class MemoryGeminiBot:
                 display_text += format_token_usage(response)
             self._reply(chat_id, display_text, edit_message_id=placeholder.message_id)
             self._save_history_safely(chat_id, history_label, reply_text)
+            notice = self.pending_notice.pop(chat_id, None)
+            if notice:
+                self.bot.send_message(chat_id, notice)
         except Exception as e:
             logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
             self._show_error(
@@ -431,6 +488,9 @@ class MemoryGeminiBot:
                 display_text += format_token_usage(response)
             self._reply(chat_id, display_text, edit_message_id=placeholder.message_id)
             self._save_history_safely(chat_id, f"[파일 첨부] {caption or '분석 요청'}", reply_text)
+            notice = self.pending_notice.pop(chat_id, None)
+            if notice:
+                self.bot.send_message(chat_id, notice)
         except Exception as e:
             logger.error(f"[{self.name}] 파일 처리 예외 (Chat ID: {chat_id}): {e}", exc_info=True)
             self._show_error(
@@ -540,12 +600,14 @@ class MemoryGeminiBot:
                 message.chat.id,
                 f"{self.welcome_message}\n\n"
                 "/search on|off - 최신 정보 검색 기능 켜기/끄기 (기본 꺼짐)\n"
-                "/tokens on|off - 답변마다 토큰 사용량 및 예상 비용 표시 켜기/끄기 (기본 켜짐)\n"
+                "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 켜짐)\n"
                 "/reset - 대화 기록 초기화\n"
                 "/model - 현재 사용 모델 확인\n"
                 "/uptime - 서버 연속 가동 시간 확인\n"
                 "/myid - 내 chat_id 확인\n"
-                "/help - 이 도움말 보기"
+                "/help - 이 도움말 보기\n"
+                "\n대화가 길어지면(약 3턴 이상) 계속 이어갈지 확인 메시지가 뜹니다. "
+                "'응'이면 계속, '아니오'면 대화 기록을 정리합니다."
                 f"{quick_section}{kb_section}"
             )
 
@@ -571,6 +633,8 @@ class MemoryGeminiBot:
             chat_id = message.chat.id
             if not is_allowed(chat_id):
                 self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            if self.awaiting_confirm.get(chat_id) and self._handle_continue_confirmation(chat_id, message.text):
                 return
             prompt, matched_names = self._build_prompt_with_kb(chat_id, message.text)
             self._process_and_reply(chat_id, message.text, prompt, thinking_text=self._thinking_text_for(matched_names))
