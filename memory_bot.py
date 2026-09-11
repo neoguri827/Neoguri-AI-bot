@@ -75,8 +75,7 @@ class MemoryGeminiBot(TelegramBotBase):
                  enable_session_confirmation: bool = False,
                  complexity_classifier: Optional[Callable[[str], str]] = None,
                  temperature: Optional[Union[float, Dict[str, float]]] = None,
-                 max_output_tokens: Optional[Union[int, Dict[str, int]]] = None,
-                 on_reply: Optional[Callable[["MemoryGeminiBot", int, str, str], None]] = None):
+                 max_output_tokens: Optional[Union[int, Dict[str, int]]] = None):
         self.name = name
         self.bot = telebot.TeleBot(token, threaded=False)
         self.router = router
@@ -84,7 +83,6 @@ class MemoryGeminiBot(TelegramBotBase):
         self.base_instruction = base_instruction
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
-        self.on_reply = on_reply
         self.welcome_message = welcome_message
         self.quick_commands = quick_commands or {}
         self.knowledge_store = knowledge_store
@@ -447,11 +445,6 @@ class MemoryGeminiBot(TelegramBotBase):
             notice = self.pending_notice.pop(chat_id, None)
             if notice:
                 self.bot.send_message(chat_id, notice)
-            if self.on_reply:
-                try:
-                    self.on_reply(self, chat_id, history_label, reply_text)
-                except Exception as e:
-                    logger.warning(f"[{self.name}] on_reply 후처리 실패(본 답변은 정상 전달됨): {e}")
         except Exception as e:
             logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
             self._show_error(

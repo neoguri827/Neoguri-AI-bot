@@ -10,7 +10,7 @@ from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS, classify_complexity
 from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
-from puppy_bot import PUPPY_INSTRUCTION, PUPPY_WELCOME, puppy_bark_on_reply
+from puppy_bot import PUPPY_INSTRUCTION, PUPPY_WELCOME
 from alarm_bot import NeoguriAlarmBot
 from directory_bot import DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME
 
@@ -103,8 +103,7 @@ def main():
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
             bot_obj = MemoryGeminiBot("개아", puppy_token, puppy_router, store,
                                        PUPPY_INSTRUCTION, PUPPY_WELCOME,
-                                       max_output_tokens=1536,
-                                       on_reply=puppy_bark_on_reply)
+                                       max_output_tokens=1536)
             t = threading.Thread(target=run_forever, args=(bot_obj, "개아"), daemon=True)
             t.start()
             threads.append(t)
