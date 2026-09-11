@@ -1,6 +1,7 @@
 import time
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 import telebot
 from telebot.types import Message
 from google.genai import types
@@ -12,9 +13,14 @@ logger = logging.getLogger(__name__)
 
 ALARM_INTERVAL_SECONDS = 60 * 60  # 1시간마다 자동 브리핑
 
+KST = timezone(timedelta(hours=9))
+
 ALARM_INSTRUCTION = (
     "너는 시장/뉴스 브리핑 AI다. 반드시 구글 검색을 실제로 호출해 방금 확인한 정보만으로 "
     "아래 항목을 간결하게 채워라. 검색 없이 추측한 수치는 절대 금지다.\n\n"
+    "매우 중요: 오늘 날짜는 네 스스로 추측하지 말고, 사용자 메시지에 명시된 날짜만 사실로 여겨라. "
+    "검색어를 만들 때도 반드시 그 날짜(또는 '오늘', '현재' 같은 표현)를 그대로 써라. 그 날짜와 다른 "
+    "과거 날짜의 시세·뉴스를 가져오면 안 된다.\n\n"
     "1. 코스피 지수(현재가, 전일 대비 등락·등락률)\n"
     "2. 나스닥 지수(현재가, 전일 대비 등락·등락률)\n"
     "3. 원/달러 환율\n"
@@ -23,7 +29,16 @@ ALARM_INSTRUCTION = (
     "마크다운 특수기호와 이모지는 쓰지 말고, 통화 기호(₩, $)만 예외로 허용한다."
 )
 
-ALARM_BRIEFING_PROMPT = "지금 기준 코스피, 나스닥, 원/달러 환율, 주요 뉴스 헤드라인을 정리해줘."
+
+def _build_briefing_prompt() -> str:
+    now = datetime.now(KST)
+    date_str = now.strftime("%Y년 %m월 %d일")
+    time_str = now.strftime("%H시 %M분")
+    return (
+        f"지금은 한국 시간 기준 {date_str} {time_str}이다. 이 날짜를 기준으로 가장 최근/현재 "
+        "코스피, 나스닥, 원/달러 환율, 주요 뉴스 헤드라인을 정리해줘. 검색어에도 이 날짜를 반영해서, "
+        "절대 다른 날짜의 옛날 데이터를 가져오지 마라."
+    )
 
 ALARM_WELCOME = (
     "알람너구리 가동\n\n"
@@ -48,7 +63,7 @@ class NeoguriAlarmBot:
         self._register_handlers()
 
     def _build_briefing(self) -> str:
-        response = self.router.generate(contents=ALARM_BRIEFING_PROMPT, config=self.config)
+        response = self.router.generate(contents=_build_briefing_prompt(), config=self.config)
         self._log_grounding_info(response)
         return response.text or "정보를 가져오지 못했습니다."
 
