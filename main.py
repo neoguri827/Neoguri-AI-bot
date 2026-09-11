@@ -10,6 +10,7 @@ from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS
 from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
+from casual_bot import CASUAL_INSTRUCTION, CASUAL_WELCOME
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
@@ -69,6 +70,20 @@ def main():
     else:
         logger.warning("TELEGRAM_TOKEN_MAIL 없어서 메일작성용 너구리는 건너뜁니다.")
 
+    casual_router = None
+    casual_token = os.environ.get("TELEGRAM_TOKEN_CASUAL")
+    if casual_token:
+        casual_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_CASUAL")), label="잡담")
+        store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
+        bot_obj = MemoryGeminiBot("심심할 때 너구리", casual_token, casual_router, store,
+                                   CASUAL_INSTRUCTION, CASUAL_WELCOME)
+        bot_registry.append(bot_obj)
+        t = threading.Thread(target=run_forever, args=(bot_obj, "심심할 때 너구리"), daemon=True)
+        t.start()
+        threads.append(t)
+    else:
+        logger.warning("TELEGRAM_TOKEN_CASUAL 없어서 심심할 때 너구리는 건너뜁니다.")
+
     if not threads:
         raise ValueError("실행 가능한 봇이 없습니다. 환경변수를 확인하세요.")
 
@@ -88,7 +103,7 @@ def main():
                 except Exception as e:
                     logger.warning(f"다운그레이드 알림 전송 실패(chat_id={chat_id}): {e}")
 
-        for router in (translate_router, assistant_router, mail_router):
+        for router in (translate_router, assistant_router, mail_router, casual_router):
             if router is not None:
                 router.on_downgrade = notify_downgrade
 
