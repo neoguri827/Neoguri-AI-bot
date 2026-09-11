@@ -77,10 +77,9 @@ class NeoguriTranslatorBot:
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
         def handle_myid(message: Message):
+            # ALLOWED_CHAT_IDS 등록 전에도 본인 chat_id를 확인할 수 있어야 하므로
+            # 이 명령만 is_allowed 검사를 우회한다.
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
-                return
             self.bot.send_message(chat_id, f"🆔 chat_id: {chat_id}")
 
         @self.bot.message_handler(commands=['uptime'])

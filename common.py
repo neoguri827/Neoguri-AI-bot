@@ -38,10 +38,16 @@ def _parse_allowed_ids(raw: Optional[str]) -> set:
 
 ALLOWED_CHAT_IDS = _parse_allowed_ids(os.environ.get("ALLOWED_CHAT_IDS"))
 
+if not ALLOWED_CHAT_IDS:
+    logger.warning(
+        "ALLOWED_CHAT_IDS가 설정되지 않아 모든 명령이 차단됩니다. "
+        "/myid로 본인의 chat_id를 확인한 뒤 환경변수에 등록하세요."
+    )
+
 
 def is_allowed(chat_id: int) -> bool:
-    if not ALLOWED_CHAT_IDS:
-        return True
+    """ALLOWED_CHAT_IDS가 비어 있으면 fail-closed(전체 차단)로 동작한다.
+    /myid만은 부트스트랩을 위해 이 검사를 우회해서 항상 응답한다."""
     return chat_id in ALLOWED_CHAT_IDS
 
 
