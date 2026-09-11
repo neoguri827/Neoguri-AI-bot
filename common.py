@@ -80,16 +80,34 @@ def get_uptime_str() -> str:
     return f"{hours}시간 {minutes}분 {seconds}초"
 
 
-def format_token_usage(response) -> str:
+def _extract_token_usage(response) -> Optional[tuple]:
     usage = getattr(response, "usage_metadata", None)
     if not usage:
-        return ""
-    prompt_tokens = getattr(usage, "prompt_token_count", None) or 0
-    output_tokens = getattr(usage, "candidates_token_count", None) or 0
+        return None
     total_tokens = getattr(usage, "total_token_count", None)
     if total_tokens is None:
+        return None
+    prompt_tokens = getattr(usage, "prompt_token_count", None) or 0
+    output_tokens = getattr(usage, "candidates_token_count", None) or 0
+    return prompt_tokens, output_tokens, total_tokens
+
+
+def format_token_usage(response) -> str:
+    usage = _extract_token_usage(response)
+    if usage is None:
         return ""
+    prompt_tokens, output_tokens, total_tokens = usage
     return f"\n\n토큰 사용: 입력 {prompt_tokens:,} · 출력 {output_tokens:,} · 합계 {total_tokens:,}"
+
+
+def log_token_usage(name: str, response) -> None:
+    """호출마다 실제 토큰 사용량을 서버 로그에 남긴다 (Render 로그에서 'text: 토큰 사용:'으로
+    필터링하면 봇별/시간대별 사용량을 추적할 수 있다). 지금까지는 이 기록이 전혀 없었다."""
+    usage = _extract_token_usage(response)
+    if usage is None:
+        return
+    prompt_tokens, output_tokens, total_tokens = usage
+    logger.info(f"[{name}] 토큰 사용: 입력 {prompt_tokens:,} · 출력 {output_tokens:,} · 합계 {total_tokens:,}")
 
 
 def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:

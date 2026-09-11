@@ -3,7 +3,7 @@ import telebot
 from telebot.types import Message
 from google.genai import types
 
-from common import TelegramBotBase
+from common import log_token_usage, TelegramBotBase
 from router import GeminiRouter
 
 logger = logging.getLogger(__name__)
@@ -106,6 +106,7 @@ class NeoguriTranslatorBot(TelegramBotBase):
             self.bot.send_chat_action(chat_id, 'typing')
             try:
                 response = self.router.generate(contents=message.text, config=self.config)
+                log_token_usage(self.name, response)
                 reply_text = response.text or EMPTY_REPLY_FALLBACK
                 self.bot.send_message(chat_id, reply_text)
             except Exception as e:

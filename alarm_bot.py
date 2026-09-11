@@ -6,7 +6,7 @@ import telebot
 from telebot.types import Message
 from google.genai import types
 
-from common import split_message, ALLOWED_CHAT_IDS, TelegramBotBase
+from common import split_message, log_token_usage, ALLOWED_CHAT_IDS, TelegramBotBase
 from router import GeminiRouter
 from store import AlarmScheduleStore
 
@@ -69,6 +69,7 @@ class NeoguriAlarmBot(TelegramBotBase):
 
     def _build_briefing(self) -> str:
         response = self.router.generate(contents=_build_briefing_prompt(), config=self.config)
+        log_token_usage(self.name, response)
         self._log_grounding_info(response)
         return response.text or "정보를 가져오지 못했습니다."
 

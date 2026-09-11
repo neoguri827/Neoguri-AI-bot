@@ -9,7 +9,7 @@ import pandas as pd
 from telebot.types import Message
 from google.genai import types
 
-from common import split_message, format_token_usage, TelegramBotBase
+from common import split_message, format_token_usage, log_token_usage, TelegramBotBase
 from router import GeminiRouter
 from store import ChatHistoryStore, KnowledgeStore
 
@@ -301,6 +301,7 @@ class MemoryGeminiBot(TelegramBotBase):
             chat_session = self._get_chat_session(chat_id, current_tier)
             try:
                 response = chat_session.send_message(content)
+                log_token_usage(self.name, response)
                 self._register_turn(chat_id, response)
                 return response
             except Exception as e:
@@ -426,6 +427,7 @@ class MemoryGeminiBot(TelegramBotBase):
         response = self.router.generate(
             contents=[types.Part.from_bytes(data=file_bytes, mime_type=mime_type), EXTRACTION_PROMPT]
         )
+        log_token_usage(self.name, response)
         return response.text or "(추출된 내용 없음)"
 
     def _process_and_reply(self, chat_id: int, history_label: str, model_prompt: Union[str, list],
