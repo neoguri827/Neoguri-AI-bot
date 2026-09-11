@@ -24,11 +24,17 @@ EXTRACTION_PROMPT = (
     "표가 있으면 구조를 유지하고, 요약하지 말고 전체 내용을 빠짐없이 옮겨 적어줘."
 )
 GROUP_DEBOUNCE_SECONDS = 3.0
-MAX_AUTO_KB_MATCHES = 3
-MAX_KB_CHARS_PER_DOC = 12000
+MAX_AUTO_KB_MATCHES = 2
+MAX_KB_CHARS_PER_DOC = 6000
+HISTORY_LOAD_LIMIT = 8
 SESSION_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
 MAX_CACHED_SESSIONS = 200
 MIN_LOCAL_PDF_TEXT_LENGTH = 100
+
+STOPWORDS = {
+    "그리고", "그런데", "그래서", "하지만", "그러면", "저장해줘", "알려줘", "해줘",
+    "것을", "것은", "인지", "입니다", "합니다", "있나요", "있어요", "얼마나", "무엇",
+}
 
 
 def extract_remember_name(caption: str, fallback_name: str) -> Tuple[Optional[str], bool]:
@@ -100,11 +106,15 @@ class MemoryGeminiBot:
                 instruction = (
                     f"{instruction}\n\n"
                     "[등록된 영구 참고자료 목록 — 아래 이름의 자료가 저장되어 있다. "
-                    "사용자 질문이 이 자료들과 관련 있어 보이면, 관련 문서 내용이 함께 전달된다]\n"
+                    "사용자 질문이 이 자료들과 관련 있어 보이면, 관련된 부분만 발췌되어 함께 전달된다]\n"
                     f"{name_list}"
                 )
         tools = [types.Tool(google_search=types.GoogleSearch())] if search_on else None
         return types.GenerateContentConfig(system_instruction=instruction, tools=tools)
+
+    def _extract_keywords(self, text: str) -> List[str]:
+        tokens = re.split(r"[\s\-_/().,?!\"'。、，:;]+", text)
+        return list({t.lower() for t in tokens if len(t) >= 2 and t.lower() not in STOPWORDS})
 
     def _find_relevant_kb(self, chat_id: int, query: str) -> List[str]:
         if not self.knowledge_store:
@@ -129,15 +139,14 @@ class MemoryGeminiBot:
         matched_names = self._find_relevant_kb(chat_id, user_text)
         if not matched_names:
             return user_text, []
+        keywords = self._extract_keywords(user_text)
         parts = []
         for name in matched_names:
-            content = self.knowledge_store.get(chat_id, name)
-            if content:
-                if len(content) > MAX_KB_CHARS_PER_DOC:
-                    content = content[:MAX_KB_CHARS_PER_DOC] + "\n...(이하 생략, 문서 일부만 반영됨)"
-                parts.append(f"[참고자료: {name}]\n{content}")
+            excerpt = self.knowledge_store.get_relevant_excerpt(chat_id, name, keywords, MAX_KB_CHARS_PER_DOC)
+            if excerpt:
+                parts.append(f"[참고자료: {name}]\n{excerpt}")
         parts.append(user_text)
-        logger.info(f"[{self.name}] 참고자료 자동 매칭: {matched_names}")
+        logger.info(f"[{self.name}] 참고자료 자동 매칭: {matched_names} (문서당 최대 {MAX_KB_CHARS_PER_DOC:,}자 발췌)")
         return parts, matched_names
 
     def _thinking_text_for(self, matched_names: List[str]) -> str:
@@ -153,7 +162,7 @@ class MemoryGeminiBot:
         self.session_last_used[chat_id] = time.time()
         if chat_id not in self.user_sessions:
             self._evict_stale_sessions()
-            history = self._history_to_genai_format(self.store.load_history(chat_id))
+            history = self._history_to_genai_format(self.store.load_history(chat_id, limit=HISTORY_LOAD_LIMIT))
             search_on = self.search_enabled.get(chat_id, False)
             config = self._build_config(chat_id, search_on)
             self.user_sessions[chat_id] = self.router.create_chat(history=history, config=config)
@@ -521,7 +530,8 @@ class MemoryGeminiBot:
                 "\n\n[영구 참고자료]\n"
                 "파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적으면 영구 저장됩니다 (reset해도 안 사라짐).\n"
                 "여러 파일을 한꺼번에 보낼 때도, 그중 아무 파일에나 캡션으로 '저장해줘'를 붙이면 전부 저장됩니다.\n"
-                "저장된 자료는 평소엔 이름만 기억하고 있다가, 질문에 관련 이름/키워드가 나오면 그때만 불러와서 답합니다.\n"
+                "저장된 자료는 평소엔 이름만 기억하고 있다가, 질문에 관련 이름/키워드가 나오면 그때만 "
+                "관련된 부분만 발췌해서 참고합니다 (문서 전체를 매번 불러오지 않아 비용이 절감됩니다).\n"
                 "/kb - 저장된 자료 목록 확인\n"
                 "/forget 문서이름 - 저장된 자료 삭제"
                 if self.knowledge_store else ""
@@ -530,7 +540,7 @@ class MemoryGeminiBot:
                 message.chat.id,
                 f"{self.welcome_message}\n\n"
                 "/search on|off - 최신 정보 검색 기능 켜기/끄기 (기본 꺼짐)\n"
-                "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 켜짐)\n"
+                "/tokens on|off - 답변마다 토큰 사용량 및 예상 비용 표시 켜기/끄기 (기본 켜짐)\n"
                 "/reset - 대화 기록 초기화\n"
                 "/model - 현재 사용 모델 확인\n"
                 "/uptime - 서버 연속 가동 시간 확인\n"
