@@ -67,7 +67,7 @@ def format_token_usage(response) -> str:
     total_tokens = getattr(usage, "total_token_count", None)
     if total_tokens is None:
         return ""
-    return f"\n\n🔢 토큰 사용: 입력 {prompt_tokens:,} · 출력 {output_tokens:,} · 합계 {total_tokens:,}"
+    return f"\n\n토큰 사용: 입력 {prompt_tokens:,} · 출력 {output_tokens:,} · 합계 {total_tokens:,}"
 
 
 def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:

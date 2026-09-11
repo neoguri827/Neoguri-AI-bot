@@ -15,9 +15,9 @@ from store import ChatHistoryStore, KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
-EMPTY_REPLY_FALLBACK = "⚠️ 응답이 비어 있습니다. 다시 한번 시도해 주세요."
-THINKING_MESSAGE = "🤔 답변 준비중입니다..."
-SAVING_MESSAGE = "📚 자료 저장 중입니다..."
+EMPTY_REPLY_FALLBACK = "응답이 비어 있습니다. 다시 한번 시도해 주세요."
+THINKING_MESSAGE = "답변 준비중입니다..."
+SAVING_MESSAGE = "자료 저장 중입니다..."
 REMEMBER_TRIGGER = "저장해줘"
 EXTRACTION_PROMPT = (
     "이 문서의 전체 내용을 최대한 원문 그대로 텍스트로 옮겨 적어줘. "
@@ -47,11 +47,11 @@ YES_KEYWORDS = {"응", "네", "예", "계속", "유지", "기억", "yes", "y", "
 NO_KEYWORDS = {"아니오", "아니요", "아니", "지워", "삭제", "초기화", "reset", "no", "n", "그만"}
 
 CONTINUE_CONFIRM_TEXT = (
-    "💬 지금까지의 대화가 길어져서, 이 상태로 계속하면 질문마다 입력 토큰이 커집니다.\n"
+    "지금까지의 대화가 길어져서, 이 상태로 계속하면 질문마다 입력 토큰이 커집니다.\n"
     "이전 내용을 계속 기억해서 이어갈까요? '응' 또는 '아니오'로 답해주세요."
 )
 AUTO_RESET_NOTICE_TEXT = (
-    "ℹ️ 대화가 많이 길어져 토큰 절약을 위해 오래된 맥락을 자동으로 정리했습니다. "
+    "대화가 많이 길어져 토큰 절약을 위해 오래된 맥락을 자동으로 정리했습니다. "
     "이어서 질문해 주세요. (영구 참고자료는 유지됩니다)"
 )
 
@@ -68,7 +68,8 @@ class MemoryGeminiBot:
     def __init__(self, name: str, token: str, router: GeminiRouter, store: ChatHistoryStore,
                  base_instruction: str, welcome_message: str,
                  quick_commands: Optional[Dict[str, str]] = None,
-                 knowledge_store: Optional[KnowledgeStore] = None):
+                 knowledge_store: Optional[KnowledgeStore] = None,
+                 enable_token_usage: bool = False):
         self.name = name
         self.bot = telebot.TeleBot(token)
         self.router = router
@@ -77,6 +78,7 @@ class MemoryGeminiBot:
         self.welcome_message = welcome_message
         self.quick_commands = quick_commands or {}
         self.knowledge_store = knowledge_store
+        self.enable_token_usage = enable_token_usage
         self.user_sessions: Dict[int, Any] = {}
         self.session_last_used: Dict[int, float] = {}
         self.session_turn_count: Dict[int, int] = {}
@@ -176,7 +178,7 @@ class MemoryGeminiBot:
         if not matched_names:
             return THINKING_MESSAGE
         names_str = "', '".join(matched_names)
-        return f"📚 저장된 자료('{names_str}')를 참고해서 답변 준비중입니다..."
+        return f"저장된 자료('{names_str}')를 참고해서 답변 준비중입니다..."
 
     def _history_to_genai_format(self, rows: List[Dict[str, str]]) -> List[types.Content]:
         return [types.Content(role=r["role"], parts=[types.Part(text=r["content"])]) for r in rows]
@@ -218,12 +220,12 @@ class MemoryGeminiBot:
         if any(k in normalized for k in NO_KEYWORDS):
             self._forget_session(chat_id)
             self.store.clear(chat_id)
-            self.bot.send_message(chat_id, "🔄 이전 대화 내용을 정리했습니다. 새로운 질문을 입력해 주세요. (영구 참고자료는 유지됩니다)")
+            self.bot.send_message(chat_id, "이전 대화 내용을 정리했습니다. 새로운 질문을 입력해 주세요. (영구 참고자료는 유지됩니다)")
             return True
         if any(k in normalized for k in YES_KEYWORDS):
             self.awaiting_confirm.pop(chat_id, None)
             self.session_turn_count[chat_id] = 0
-            self.bot.send_message(chat_id, "🔗 알겠습니다. 이전 내용을 계속 이어서 기억하겠습니다.")
+            self.bot.send_message(chat_id, "알겠습니다. 이전 내용을 계속 이어서 기억하겠습니다.")
             return True
         # 명확한 응답이 아니면 확인은 종료하고, 방금 메시지는 새 질문으로 처리(기본은 '계속 유지')
         self.awaiting_confirm.pop(chat_id, None)
@@ -365,7 +367,7 @@ class MemoryGeminiBot:
             response = self._send_with_retry(chat_id, model_prompt)
             reply_text = response.text or EMPTY_REPLY_FALLBACK
             display_text = reply_text
-            if self.show_tokens.get(chat_id, True):
+            if self.enable_token_usage and self.show_tokens.get(chat_id, True):
                 display_text += format_token_usage(response)
             self._reply(chat_id, display_text, edit_message_id=placeholder.message_id)
             self._save_history_safely(chat_id, history_label, reply_text)
@@ -376,7 +378,7 @@ class MemoryGeminiBot:
             logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
             self._show_error(
                 chat_id,
-                "⚠️ 오류가 발생했습니다. 잠시 후 다시 시도하거나 /reset을 입력해 주세요.",
+                "오류가 발생했습니다. 잠시 후 다시 시도하거나 /reset을 입력해 주세요.",
                 edit_message_id=placeholder.message_id
             )
 
@@ -384,7 +386,7 @@ class MemoryGeminiBot:
         def handler(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
             extra = message.text.partition(' ')[2].strip()
             base_text = template + (f"\n\n[추가 참고 사항]: {extra}" if extra else "")
@@ -418,7 +420,7 @@ class MemoryGeminiBot:
             return
         chat_id = group["chat_id"]
         if not is_allowed(chat_id):
-            self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+            self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
             return
 
         caption = (group["caption"] or "").strip()
@@ -435,7 +437,7 @@ class MemoryGeminiBot:
             if not self.knowledge_store:
                 self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
                 return
-            notice = self.bot.send_message(chat_id, f"📚 파일 {len(items)}개 저장 중입니다...")
+            notice = self.bot.send_message(chat_id, f"파일 {len(items)}개 저장 중입니다...")
             saved, failed = [], []
             for msg in items:
                 try:
@@ -452,15 +454,15 @@ class MemoryGeminiBot:
                     logger.error(f"[{self.name}] 그룹 파일 저장 실패: {e}", exc_info=True)
                     failed.append(getattr(msg.document, "file_name", "알 수 없는 파일") if msg.content_type == 'document' else "사진")
             self._forget_session(chat_id)
-            result = "📚 저장 완료:\n" + "\n".join(f"- {n}" for n in saved)
+            result = "저장 완료:\n" + "\n".join(f"- {n}" for n in saved)
             if failed:
-                result += "\n\n⚠️ 저장 실패:\n" + "\n".join(f"- {n}" for n in failed)
+                result += "\n\n저장 실패:\n" + "\n".join(f"- {n}" for n in failed)
             try:
                 self.bot.edit_message_text(result, chat_id=chat_id, message_id=notice.message_id)
             except Exception:
                 self.bot.send_message(chat_id, result)
         else:
-            self.bot.send_message(chat_id, f"ℹ️ 파일 {len(items)}개를 받았습니다. 여러 파일 동시 분석은 지원하지 않아 첫 번째 파일만 분석합니다.\n"
+            self.bot.send_message(chat_id, f"파일 {len(items)}개를 받았습니다. 여러 파일 동시 분석은 지원하지 않아 첫 번째 파일만 분석합니다.\n"
                                             f"전체를 저장하려면 캡션에 '{REMEMBER_TRIGGER}'를 붙여 다시 보내주세요.")
             self._handle_single_file(items[0])
 
@@ -469,18 +471,18 @@ class MemoryGeminiBot:
     def _handle_single_file(self, message: Message):
         chat_id = message.chat.id
         if not is_allowed(chat_id):
-            self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+            self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
             return
 
         caption = message.caption or ""
         try:
             file_name, file_bytes, mime_type = self._download_file_payload(message)
         except FileTooLargeError as e:
-            self.bot.send_message(chat_id, f"⚠️ 파일이 너무 큽니다: {e}")
+            self.bot.send_message(chat_id, f"파일이 너무 큽니다: {e}")
             return
         except Exception as e:
             logger.error(f"[{self.name}] 파일 다운로드 실패 (Chat ID: {chat_id}): {e}", exc_info=True)
-            self.bot.send_message(chat_id, "⚠️ 파일을 받는 중 오류가 발생했습니다.")
+            self.bot.send_message(chat_id, "파일을 받는 중 오류가 발생했습니다.")
             return
 
         remember_name, is_fallback = extract_remember_name(caption, file_name)
@@ -497,7 +499,7 @@ class MemoryGeminiBot:
                 text = self._extract_kb_text(file_name, file_bytes, mime_type)
                 self.knowledge_store.add(chat_id, final_name, text)
                 self._forget_session(chat_id)
-                self._reply(chat_id, f"📚 '{final_name}' 자료로 저장했습니다. 앞으로 관련 질문에 자동으로 참고합니다.", edit_message_id=placeholder.message_id)
+                self._reply(chat_id, f"'{final_name}' 자료로 저장했습니다. 앞으로 관련 질문에 자동으로 참고합니다.", edit_message_id=placeholder.message_id)
                 return
 
             if file_name.lower().endswith((".xlsx", ".xls")):
@@ -508,7 +510,7 @@ class MemoryGeminiBot:
             response = self._send_with_retry(chat_id, content_parts)
             reply_text = response.text or EMPTY_REPLY_FALLBACK
             display_text = reply_text
-            if self.show_tokens.get(chat_id, True):
+            if self.enable_token_usage and self.show_tokens.get(chat_id, True):
                 display_text += format_token_usage(response)
             self._reply(chat_id, display_text, edit_message_id=placeholder.message_id)
             self._save_history_safely(chat_id, f"[파일 첨부] {caption or '분석 요청'}", reply_text)
@@ -519,7 +521,7 @@ class MemoryGeminiBot:
             logger.error(f"[{self.name}] 파일 처리 예외 (Chat ID: {chat_id}): {e}", exc_info=True)
             self._show_error(
                 chat_id,
-                "⚠️ 파일 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                "파일 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
                 edit_message_id=placeholder.message_id
             )
 
@@ -529,29 +531,29 @@ class MemoryGeminiBot:
             # ALLOWED_CHAT_IDS 등록 전에도 본인 chat_id를 확인할 수 있어야 하므로
             # 이 명령만 is_allowed 검사를 우회한다.
             chat_id = message.chat.id
-            self.bot.send_message(chat_id, f"🆔 chat_id: {chat_id}")
+            self.bot.send_message(chat_id, f"chat_id: {chat_id}")
 
         @self.bot.message_handler(commands=['uptime'])
         def handle_uptime(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
-            self.bot.send_message(chat_id, f"⏱ 서버 연속 가동 시간: {get_uptime_str()}")
+            self.bot.send_message(chat_id, f"서버 연속 가동 시간: {get_uptime_str()}")
 
         @self.bot.message_handler(commands=['model'])
         def handle_model(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
-            self.bot.send_message(chat_id, f"🧠 현재 사용 중인 모델: {self.router.model_name}")
+            self.bot.send_message(chat_id, f"현재 사용 중인 모델: {self.router.model_name}")
 
         @self.bot.message_handler(commands=['search'])
         def handle_search_toggle(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
             parts = message.text.split()
             if len(parts) < 2 or parts[1].lower() not in ('on', 'off'):
@@ -561,44 +563,45 @@ class MemoryGeminiBot:
             enable = parts[1].lower() == 'on'
             self.search_enabled[chat_id] = enable
             self._forget_session(chat_id)
-            self.bot.send_message(chat_id, f"🔍 검색 기능을 {'켰습니다' if enable else '껐습니다'}.")
+            self.bot.send_message(chat_id, f"검색 기능을 {'켰습니다' if enable else '껐습니다'}.")
 
-        @self.bot.message_handler(commands=['tokens'])
-        def handle_tokens_toggle(message: Message):
-            chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
-                return
-            parts = message.text.split()
-            if len(parts) < 2 or parts[1].lower() not in ('on', 'off'):
-                current = "켜짐" if self.show_tokens.get(chat_id, True) else "꺼짐"
-                self.bot.send_message(chat_id, f"현재 토큰 사용량 표시: {current}\n사용법: /tokens on 또는 /tokens off")
-                return
-            enable = parts[1].lower() == 'on'
-            self.show_tokens[chat_id] = enable
-            self.bot.send_message(chat_id, f"🔢 토큰 사용량 표시를 {'켰습니다' if enable else '껐습니다'}.")
+        if self.enable_token_usage:
+            @self.bot.message_handler(commands=['tokens'])
+            def handle_tokens_toggle(message: Message):
+                chat_id = message.chat.id
+                if not is_allowed(chat_id):
+                    self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+                    return
+                parts = message.text.split()
+                if len(parts) < 2 or parts[1].lower() not in ('on', 'off'):
+                    current = "켜짐" if self.show_tokens.get(chat_id, True) else "꺼짐"
+                    self.bot.send_message(chat_id, f"현재 토큰 사용량 표시: {current}\n사용법: /tokens on 또는 /tokens off")
+                    return
+                enable = parts[1].lower() == 'on'
+                self.show_tokens[chat_id] = enable
+                self.bot.send_message(chat_id, f"토큰 사용량 표시를 {'켰습니다' if enable else '껐습니다'}.")
 
         @self.bot.message_handler(commands=['kb'])
         def handle_kb_list(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
             if not self.knowledge_store:
                 self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
                 return
             names = self.knowledge_store.list_names(chat_id)
             if not names:
-                self.bot.send_message(chat_id, "📚 저장된 참고자료가 없습니다.\n파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적어서 등록하세요.")
+                self.bot.send_message(chat_id, "저장된 참고자료가 없습니다.\n파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적어서 등록하세요.")
                 return
             listing = "\n".join(f"- {n}" for n in names)
-            self.bot.send_message(chat_id, f"📚 저장된 참고자료 목록:\n{listing}\n\n질문에 이 이름이나 관련 키워드가 들어가면 자동으로 불러와서 참고합니다.")
+            self.bot.send_message(chat_id, f"저장된 참고자료 목록:\n{listing}\n\n질문에 이 이름이나 관련 키워드가 들어가면 자동으로 불러와서 참고합니다.")
 
         @self.bot.message_handler(commands=['forget'])
         def handle_forget(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
             if not self.knowledge_store:
                 self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
@@ -609,7 +612,7 @@ class MemoryGeminiBot:
                 return
             if self.knowledge_store.remove(chat_id, name):
                 self._forget_session(chat_id)
-                self.bot.send_message(chat_id, f"🗑 '{name}' 자료를 삭제했습니다.")
+                self.bot.send_message(chat_id, f"'{name}' 자료를 삭제했습니다.")
             else:
                 self.bot.send_message(chat_id, f"'{name}'이라는 이름의 저장된 자료를 찾지 못했습니다. /kb로 목록을 확인하세요.")
 
@@ -617,7 +620,7 @@ class MemoryGeminiBot:
         def handle_help(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
             quick_list = "\n".join(f"/{c} - {t[:28]}..." for c, t in self.quick_commands.items())
             quick_section = f"\n\n[전문 분야 단축 명령어]\n{quick_list}" if quick_list else ""
@@ -631,11 +634,12 @@ class MemoryGeminiBot:
                 "/forget 문서이름 - 저장된 자료 삭제"
                 if self.knowledge_store else ""
             )
+            tokens_line = "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 켜짐)\n" if self.enable_token_usage else ""
             self.bot.send_message(
                 chat_id,
                 f"{self.welcome_message}\n\n"
                 "/search on|off - 최신 정보 검색 기능 켜기/끄기 (기본 꺼짐)\n"
-                "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 켜짐)\n"
+                f"{tokens_line}"
                 "/reset - 대화 기록 초기화\n"
                 "/model - 현재 사용 모델 확인\n"
                 "/uptime - 서버 연속 가동 시간 확인\n"
@@ -650,7 +654,7 @@ class MemoryGeminiBot:
         def handle_commands(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
             command = message.text.split()[0].lower()
             if command == '/start':
@@ -658,7 +662,7 @@ class MemoryGeminiBot:
             elif command == '/reset':
                 self._forget_session(chat_id)
                 self.store.clear(chat_id)
-                self.bot.send_message(chat_id, "🔄 대화 기록이 초기화되었습니다. (영구 참고자료는 유지됩니다)")
+                self.bot.send_message(chat_id, "대화 기록이 초기화되었습니다. (영구 참고자료는 유지됩니다)")
 
         for cmd_name, template in self.quick_commands.items():
             self.bot.message_handler(commands=[cmd_name])(self._make_quick_command_handler(cmd_name, template))
@@ -667,7 +671,7 @@ class MemoryGeminiBot:
         def handle_text(message: Message):
             chat_id = message.chat.id
             if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
                 return
             if self.awaiting_confirm.get(chat_id) and self._handle_continue_confirmation(chat_id, message.text):
                 return

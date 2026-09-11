@@ -68,10 +68,12 @@ class GeminiRouter:
         if not usable:
             return []
 
+        # "-latest"류 별칭은 실제로 어떤 모델이 응답했는지 사용자가 알 수 없으므로,
+        # 구체적인 버전이 박힌 모델명을 우선하고 별칭은 후순위 대체용으로만 둔다.
         latest_flash = [c for c in usable if "latest" in c.lower() and "flash" in c.lower()]
         other_flash = [c for c in usable if "flash" in c.lower() and c not in latest_flash]
         others = [c for c in usable if c not in latest_flash and c not in other_flash]
-        return latest_flash + other_flash + others
+        return other_flash + latest_flash + others
 
     @staticmethod
     def is_retryable_model_error(e: Exception) -> bool:
