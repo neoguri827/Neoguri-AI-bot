@@ -54,13 +54,6 @@ class KnowledgeStore:
     def list_names(self, chat_id: int) -> List[str]:
         return list(self.redis.hkeys(self._key(chat_id)) or [])
 
-    def get_all_text(self, chat_id: int) -> str:
-        data = self.redis.hgetall(self._key(chat_id)) or {}
-        if not data:
-            return ""
-        parts = [f"[참고자료: {name}]\n{content}" for name, content in data.items()]
-        return "\n\n".join(parts)
-
     def get_relevant_excerpt(self, chat_id: int, name: str, keywords: List[str], max_chars: int) -> Optional[str]:
         """문서 전체 대신, 질문 키워드와 관련된 문단만 최대 max_chars 이내로 발췌해서 반환한다."""
         content = self.get(chat_id, name)
