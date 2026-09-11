@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_LEN = 4000
 START_TIME = time.time()
 
+# Gemini Flash 계열 추정 단가(변경 가능) — 실제 청구는 ai.google.dev/pricing 기준
+GEMINI_INPUT_USD_PER_1M = float(os.environ.get("GEMINI_INPUT_USD_PER_1M", "0.1"))
+GEMINI_OUTPUT_USD_PER_1M = float(os.environ.get("GEMINI_OUTPUT_USD_PER_1M", "0.4"))
+USD_TO_KRW = float(os.environ.get("USD_TO_KRW", "1400"))
+
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -52,16 +57,26 @@ def get_uptime_str() -> str:
     return f"{hours}시간 {minutes}분 {seconds}초"
 
 
+def estimate_cost_krw(prompt_tokens: int, output_tokens: int) -> float:
+    usd = (prompt_tokens * GEMINI_INPUT_USD_PER_1M + output_tokens * GEMINI_OUTPUT_USD_PER_1M) / 1_000_000
+    return usd * USD_TO_KRW
+
+
 def format_token_usage(response) -> str:
     usage = getattr(response, "usage_metadata", None)
     if not usage:
         return ""
-    prompt_tokens = getattr(usage, "prompt_token_count", None)
-    output_tokens = getattr(usage, "candidates_token_count", None)
+    prompt_tokens = getattr(usage, "prompt_token_count", None) or 0
+    output_tokens = getattr(usage, "candidates_token_count", None) or 0
     total_tokens = getattr(usage, "total_token_count", None)
     if total_tokens is None:
         return ""
-    return f"\n\n🔢 토큰 사용: 입력 {prompt_tokens or 0:,} · 출력 {output_tokens or 0:,} · 합계 {total_tokens:,}"
+    krw = estimate_cost_krw(prompt_tokens, output_tokens)
+    cost_str = "1원 미만" if krw < 1 else f"약 {krw:,.0f}원"
+    return (
+        f"\n\n🔢 토큰 사용: 입력 {prompt_tokens:,} · 출력 {output_tokens:,} · 합계 {total_tokens:,}"
+        f"\n💰 예상 비용: {cost_str} (Gemini Flash 계열 추정 단가 기준, 실제 단가는 ai.google.dev/pricing 참고)"
+    )
 
 
 def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
