@@ -1,4 +1,5 @@
 import io
+import re
 import time
 import logging
 import threading
@@ -23,6 +24,7 @@ EXTRACTION_PROMPT = (
     "표가 있으면 구조를 유지하고, 요약하지 말고 전체 내용을 빠짐없이 옮겨 적어줘."
 )
 GROUP_DEBOUNCE_SECONDS = 3.0
+MAX_AUTO_KB_MATCHES = 3
 
 
 def extract_remember_name(caption: str, fallback_name: str) -> Optional[str]:
@@ -55,15 +57,49 @@ class MemoryGeminiBot:
     def _build_config(self, chat_id: int, search_on: bool) -> types.GenerateContentConfig:
         instruction = self.base_instruction
         if self.knowledge_store:
-            kb_text = self.knowledge_store.get_all_text(chat_id)
-            if kb_text:
+            names = self.knowledge_store.list_names(chat_id)
+            if names:
+                name_list = ", ".join(names)
                 instruction = (
                     f"{instruction}\n\n"
-                    "[영구 참고자료 — 사용자가 등록해둔 자료다. 관련 질문엔 항상 우선 참고하라]\n"
-                    f"{kb_text}"
+                    "[등록된 영구 참고자료 목록 — 아래 이름의 자료가 저장되어 있다. "
+                    "사용자 질문이 이 자료들과 관련 있어 보이면, 관련 문서 내용이 함께 전달된다]\n"
+                    f"{name_list}"
                 )
         tools = [types.Tool(google_search=types.GoogleSearch())] if search_on else None
         return types.GenerateContentConfig(system_instruction=instruction, tools=tools)
+
+    def _find_relevant_kb(self, chat_id: int, query: str) -> List[str]:
+        if not self.knowledge_store:
+            return []
+        names = self.knowledge_store.list_names(chat_id)
+        if not names:
+            return []
+        query_lower = query.lower()
+        query_compact = query.replace(" ", "").lower()
+        matched = []
+        for name in names:
+            name_compact = name.replace(" ", "").lower()
+            if name_compact and name_compact in query_compact:
+                matched.append(name)
+                continue
+            tokens = [t for t in re.split(r"[\s\-_/().,]+", name) if len(t) >= 2]
+            if any(t.lower() in query_lower for t in tokens):
+                matched.append(name)
+        return matched[:MAX_AUTO_KB_MATCHES]
+
+    def _build_prompt_with_kb(self, chat_id: int, user_text: str) -> Union[str, list]:
+        matched_names = self._find_relevant_kb(chat_id, user_text)
+        if not matched_names:
+            return user_text
+        parts = []
+        for name in matched_names:
+            content = self.knowledge_store.get(chat_id, name)
+            if content:
+                parts.append(f"[참고자료: {name}]\n{content}")
+        parts.append(user_text)
+        logger.info(f"[{self.name}] 참고자료 자동 매칭: {matched_names}")
+        return parts
 
     def _history_to_genai_format(self, rows: List[Dict[str, str]]) -> List[types.Content]:
         return [types.Content(role=r["role"], parts=[types.Part(text=r["content"])]) for r in rows]
@@ -192,7 +228,8 @@ class MemoryGeminiBot:
                 self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
                 return
             extra = message.text.partition(' ')[2].strip()
-            prompt = template + (f"\n\n[추가 참고 사항]: {extra}" if extra else "")
+            base_text = template + (f"\n\n[추가 참고 사항]: {extra}" if extra else "")
+            prompt = self._build_prompt_with_kb(chat_id, base_text)
             history_label = f"/{cmd_name} {extra}".strip()
             self._process_and_reply(chat_id, history_label, prompt)
         return handler
@@ -293,7 +330,7 @@ class MemoryGeminiBot:
                 text = self._extract_kb_text(file_name, file_bytes, mime_type)
                 self.knowledge_store.add(chat_id, remember_name, text)
                 self.user_sessions.pop(chat_id, None)
-                self._reply(chat_id, f"📚 '{remember_name}' 자료로 저장했습니다. 앞으로 관련 질문에 항상 참고합니다.", edit_message_id=placeholder.message_id)
+                self._reply(chat_id, f"📚 '{remember_name}' 자료로 저장했습니다. 앞으로 관련 질문에 자동으로 참고합니다.", edit_message_id=placeholder.message_id)
                 return
 
             if file_name.lower().endswith((".xlsx", ".xls")):
@@ -360,7 +397,7 @@ class MemoryGeminiBot:
                 self.bot.send_message(chat_id, "📚 저장된 참고자료가 없습니다.\n파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적어서 등록하세요.")
                 return
             listing = "\n".join(f"- {n}" for n in names)
-            self.bot.send_message(chat_id, f"📚 저장된 참고자료 목록:\n{listing}")
+            self.bot.send_message(chat_id, f"📚 저장된 참고자료 목록:\n{listing}\n\n질문에 이 이름이나 관련 키워드가 들어가면 자동으로 불러와서 참고합니다.")
 
         @self.bot.message_handler(commands=['forget'])
         def handle_forget(message: Message):
@@ -389,6 +426,7 @@ class MemoryGeminiBot:
                 "\n\n[영구 참고자료]\n"
                 "파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적으면 영구 저장됩니다 (reset해도 안 사라짐).\n"
                 "여러 파일을 한꺼번에 보낼 때도, 그중 아무 파일에나 캡션으로 '저장해줘'를 붙이면 전부 저장됩니다.\n"
+                "저장된 자료는 평소엔 이름만 기억하고 있다가, 질문에 관련 이름/키워드가 나오면 그때만 불러와서 답합니다 (평소 비용 절감).\n"
                 "/kb - 저장된 자료 목록 확인\n"
                 "/forget 문서이름 - 저장된 자료 삭제"
                 if self.knowledge_store else ""
@@ -428,7 +466,8 @@ class MemoryGeminiBot:
             if not is_allowed(chat_id):
                 self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
                 return
-            self._process_and_reply(chat_id, message.text, message.text)
+            prompt = self._build_prompt_with_kb(chat_id, message.text)
+            self._process_and_reply(chat_id, message.text, prompt)
 
         @self.bot.message_handler(content_types=['document', 'photo'])
         def handle_file(message: Message):
