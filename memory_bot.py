@@ -3,7 +3,7 @@ import re
 import time
 import logging
 import threading
-from typing import Dict, Any, List, Union, Optional
+from typing import Dict, Any, List, Union, Optional, Tuple
 import telebot
 import pandas as pd
 from telebot.types import Message
@@ -25,6 +25,7 @@ EXTRACTION_PROMPT = (
 )
 GROUP_DEBOUNCE_SECONDS = 3.0
 MAX_AUTO_KB_MATCHES = 3
+MAX_KB_CHARS_PER_DOC = 12000
 
 
 def extract_remember_name(caption: str, fallback_name: str) -> Optional[str]:
@@ -88,18 +89,26 @@ class MemoryGeminiBot:
                 matched.append(name)
         return matched[:MAX_AUTO_KB_MATCHES]
 
-    def _build_prompt_with_kb(self, chat_id: int, user_text: str) -> Union[str, list]:
+    def _build_prompt_with_kb(self, chat_id: int, user_text: str) -> Tuple[Union[str, list], List[str]]:
         matched_names = self._find_relevant_kb(chat_id, user_text)
         if not matched_names:
-            return user_text
+            return user_text, []
         parts = []
         for name in matched_names:
             content = self.knowledge_store.get(chat_id, name)
             if content:
+                if len(content) > MAX_KB_CHARS_PER_DOC:
+                    content = content[:MAX_KB_CHARS_PER_DOC] + "\n...(이하 생략, 문서 일부만 반영됨)"
                 parts.append(f"[참고자료: {name}]\n{content}")
         parts.append(user_text)
         logger.info(f"[{self.name}] 참고자료 자동 매칭: {matched_names}")
-        return parts
+        return parts, matched_names
+
+    def _thinking_text_for(self, matched_names: List[str]) -> str:
+        if not matched_names:
+            return THINKING_MESSAGE
+        names_str = "', '".join(matched_names)
+        return f"📚 저장된 자료('{names_str}')를 참고해서 답변 준비중입니다..."
 
     def _history_to_genai_format(self, rows: List[Dict[str, str]]) -> List[types.Content]:
         return [types.Content(role=r["role"], parts=[types.Part(text=r["content"])]) for r in rows]
@@ -205,9 +214,10 @@ class MemoryGeminiBot:
         )
         return response.text or "(추출된 내용 없음)"
 
-    def _process_and_reply(self, chat_id: int, history_label: str, model_prompt: Union[str, list]):
+    def _process_and_reply(self, chat_id: int, history_label: str, model_prompt: Union[str, list],
+                            thinking_text: str = THINKING_MESSAGE):
         self.bot.send_chat_action(chat_id, 'typing')
-        placeholder = self.bot.send_message(chat_id, THINKING_MESSAGE)
+        placeholder = self.bot.send_message(chat_id, thinking_text)
         try:
             response = self._send_with_retry(chat_id, model_prompt)
             reply_text = response.text or EMPTY_REPLY_FALLBACK
@@ -229,9 +239,9 @@ class MemoryGeminiBot:
                 return
             extra = message.text.partition(' ')[2].strip()
             base_text = template + (f"\n\n[추가 참고 사항]: {extra}" if extra else "")
-            prompt = self._build_prompt_with_kb(chat_id, base_text)
+            prompt, matched_names = self._build_prompt_with_kb(chat_id, base_text)
             history_label = f"/{cmd_name} {extra}".strip()
-            self._process_and_reply(chat_id, history_label, prompt)
+            self._process_and_reply(chat_id, history_label, prompt, thinking_text=self._thinking_text_for(matched_names))
         return handler
 
     # ---------------- 앨범(여러 파일 묶음) 처리 ----------------
@@ -426,7 +436,8 @@ class MemoryGeminiBot:
                 "\n\n[영구 참고자료]\n"
                 "파일 보낼 때 캡션에 '저장해줘' 또는 '저장해줘 문서이름'이라고 적으면 영구 저장됩니다 (reset해도 안 사라짐).\n"
                 "여러 파일을 한꺼번에 보낼 때도, 그중 아무 파일에나 캡션으로 '저장해줘'를 붙이면 전부 저장됩니다.\n"
-                "저장된 자료는 평소엔 이름만 기억하고 있다가, 질문에 관련 이름/키워드가 나오면 그때만 불러와서 답합니다 (평소 비용 절감).\n"
+                "저장된 자료는 평소엔 이름만 기억하고 있다가, 질문에 관련 이름/키워드가 나오면 그때만 불러와서 답합니다.\n"
+                "이때는 '📚 자료를 참고해서 답변 준비중...'이라고 안내가 뜹니다.\n"
                 "/kb - 저장된 자료 목록 확인\n"
                 "/forget 문서이름 - 저장된 자료 삭제"
                 if self.knowledge_store else ""
@@ -466,8 +477,8 @@ class MemoryGeminiBot:
             if not is_allowed(chat_id):
                 self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
                 return
-            prompt = self._build_prompt_with_kb(chat_id, message.text)
-            self._process_and_reply(chat_id, message.text, prompt)
+            prompt, matched_names = self._build_prompt_with_kb(chat_id, message.text)
+            self._process_and_reply(chat_id, message.text, prompt, thinking_text=self._thinking_text_for(matched_names))
 
         @self.bot.message_handler(content_types=['document', 'photo'])
         def handle_file(message: Message):
