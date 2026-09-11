@@ -90,13 +90,13 @@ def main():
     alarm_token = os.environ.get("TELEGRAM_TOKEN_ALARM")
     if alarm_token:
         alarm_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ALARM")), label="알람")
-        bot_obj = NeoguriAlarmBot("너구리 알람봇", alarm_token, alarm_router)
+        bot_obj = NeoguriAlarmBot("알람너구리", alarm_token, alarm_router)
         bot_registry.append(bot_obj)
-        t = threading.Thread(target=run_forever, args=(bot_obj, "너구리 알람봇"), daemon=True)
+        t = threading.Thread(target=run_forever, args=(bot_obj, "알람너구리"), daemon=True)
         t.start()
         threads.append(t)
     else:
-        logger.warning("TELEGRAM_TOKEN_ALARM 없어서 너구리 알람봇은 건너뜁니다.")
+        logger.warning("TELEGRAM_TOKEN_ALARM 없어서 알람너구리는 건너뜁니다.")
 
     if not threads:
         raise ValueError("실행 가능한 봇이 없습니다. 환경변수를 확인하세요.")
