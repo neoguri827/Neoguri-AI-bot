@@ -5,14 +5,14 @@ from google import genai
 
 from common import start_health_server, run_forever, logger
 from router import GeminiRouter, resolve_api_key
-from store import ChatHistoryStore, KnowledgeStore, DirectoryStore
+from store import ChatHistoryStore, KnowledgeStore
 from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS, classify_complexity
 from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
 from puppy_bot import PUPPY_INSTRUCTION, PUPPY_WELCOME
 from alarm_bot import NeoguriAlarmBot
-from directory_bot import NeoguriDirectoryBot
+from directory_bot import DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
@@ -122,8 +122,12 @@ def main():
     directory_token = _get_env_token("TELEGRAM_TOKEN_DIRECTORY")
     if directory_token:
         try:
-            directory_store = DirectoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="directory")
-            bot_obj = NeoguriDirectoryBot("내선/비상연락 너구리", directory_token, directory_store)
+            directory_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_DIRECTORY")), label="내선연락처")
+            store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="directory")
+            kb_store = KnowledgeStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="directory")
+            bot_obj = MemoryGeminiBot("내선/비상연락 너구리", directory_token, directory_router, store,
+                                       DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME,
+                                       knowledge_store=kb_store)
             t = threading.Thread(target=run_forever, args=(bot_obj, "내선/비상연락 너구리"), daemon=True)
             t.start()
             threads.append(t)
