@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List
+from typing import Dict, List, Optional
 from upstash_redis import Redis
 
 
@@ -43,6 +43,9 @@ class KnowledgeStore:
 
     def add(self, chat_id: int, name: str, content: str):
         self.redis.hset(self._key(chat_id), name, content)
+
+    def get(self, chat_id: int, name: str) -> Optional[str]:
+        return self.redis.hget(self._key(chat_id), name)
 
     def remove(self, chat_id: int, name: str) -> bool:
         removed = self.redis.hdel(self._key(chat_id), name)
