@@ -60,3 +60,41 @@ class KnowledgeStore:
             return ""
         parts = [f"[참고자료: {name}]\n{content}" for name, content in data.items()]
         return "\n\n".join(parts)
+
+    def get_relevant_excerpt(self, chat_id: int, name: str, keywords: List[str], max_chars: int) -> Optional[str]:
+        """문서 전체 대신, 질문 키워드와 관련된 문단만 최대 max_chars 이내로 발췌해서 반환한다."""
+        content = self.get(chat_id, name)
+        if content is None:
+            return None
+        if len(content) <= max_chars:
+            return content
+
+        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+        if not paragraphs:
+            paragraphs = [content]
+
+        lowered_keywords = [k.lower() for k in keywords if k]
+        scored = []
+        for idx, para in enumerate(paragraphs):
+            para_lower = para.lower()
+            score = sum(para_lower.count(k) for k in lowered_keywords) if lowered_keywords else 0
+            scored.append((score, idx, para))
+
+        relevant = sorted((p for p in scored if p[0] > 0), key=lambda x: (-x[0], x[1]))
+        selected: Dict[int, str] = {}
+        total_len = 0
+        for score, idx, para in relevant:
+            if total_len + len(para) > max_chars:
+                continue
+            selected[idx] = para
+            total_len += len(para)
+
+        if not selected:
+            excerpt = content[:max_chars]
+            return excerpt + f"\n...(문서 앞부분 {max_chars:,}자만 표시, 전체 {len(content):,}자 중 일부)"
+
+        ordered_idx = sorted(selected.keys())
+        excerpt = "\n\n".join(selected[i] for i in ordered_idx)
+        if len(selected) < len(paragraphs):
+            excerpt += f"\n...(질문과 관련된 문단만 발췌함, 전체 {len(content):,}자 중 {len(excerpt):,}자 표시)"
+        return excerpt
