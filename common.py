@@ -52,6 +52,18 @@ def get_uptime_str() -> str:
     return f"{hours}시간 {minutes}분 {seconds}초"
 
 
+def format_token_usage(response) -> str:
+    usage = getattr(response, "usage_metadata", None)
+    if not usage:
+        return ""
+    prompt_tokens = getattr(usage, "prompt_token_count", None)
+    output_tokens = getattr(usage, "candidates_token_count", None)
+    total_tokens = getattr(usage, "total_token_count", None)
+    if total_tokens is None:
+        return ""
+    return f"\n\n🔢 토큰 사용: 입력 {prompt_tokens or 0:,} · 출력 {output_tokens or 0:,} · 합계 {total_tokens:,}"
+
+
 def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
     if len(text) <= limit:
         return [text]
