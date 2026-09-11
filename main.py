@@ -15,6 +15,13 @@ from alarm_bot import NeoguriAlarmBot
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
+def _get_env_token(name: str):
+    """환경변수에 실수로 섞여 들어간 공백/줄바꿈 때문에 텔레그램 토큰 검증이
+    실패해서 프로세스 전체가 죽는 일을 막기 위해 앞뒤 공백을 제거한다."""
+    value = os.environ.get(name)
+    return value.strip() if value else value
+
+
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 if not UPSTASH_URL or not UPSTASH_TOKEN:
@@ -26,75 +33,100 @@ def main():
     bot_registry = []
 
     translate_router = None
-    translator_tokens = {cfg["name"]: os.environ.get(cfg["token_env"]) for cfg in TRANSLATOR_BOT_DEFS}
+    translator_tokens = {cfg["name"]: _get_env_token(cfg["token_env"]) for cfg in TRANSLATOR_BOT_DEFS}
     if any(translator_tokens.values()):
-        translate_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_TRANSLATE")), label="번역")
-        for cfg in TRANSLATOR_BOT_DEFS:
-            token = translator_tokens[cfg["name"]]
-            if not token:
-                logger.warning(f"{cfg['token_env']} 없어서 {cfg['name']} 건너뜁니다.")
-                continue
-            bot_obj = NeoguriTranslatorBot(cfg["name"], token, cfg["instruction"], translate_router)
-            bot_registry.append(bot_obj)
-            t = threading.Thread(target=run_forever, args=(bot_obj, cfg["name"]), daemon=True)
-            t.start()
-            threads.append(t)
+        try:
+            translate_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_TRANSLATE")), label="번역")
+        except Exception as e:
+            logger.error(f"번역 라우터 초기화 실패, 번역봇 전체를 건너뜁니다: {e}", exc_info=True)
+            translate_router = None
+        if translate_router is not None:
+            for cfg in TRANSLATOR_BOT_DEFS:
+                token = translator_tokens[cfg["name"]]
+                if not token:
+                    logger.warning(f"{cfg['token_env']} 없어서 {cfg['name']} 건너뜁니다.")
+                    continue
+                try:
+                    bot_obj = NeoguriTranslatorBot(cfg["name"], token, cfg["instruction"], translate_router)
+                except Exception as e:
+                    logger.error(f"{cfg['name']} 초기화 실패, 건너뜁니다: {e}", exc_info=True)
+                    continue
+                bot_registry.append(bot_obj)
+                t = threading.Thread(target=run_forever, args=(bot_obj, cfg["name"]), daemon=True)
+                t.start()
+                threads.append(t)
 
     assistant_router = None
-    smart_token = os.environ.get("TELEGRAM_TOKEN_SMART")
+    smart_token = _get_env_token("TELEGRAM_TOKEN_SMART")
     if smart_token:
-        assistant_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ASSISTANT")), label="비서")
-        store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="assistant")
-        kb_store = KnowledgeStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="assistant")
-        bot_obj = MemoryGeminiBot("똑똑한 너구리", smart_token, assistant_router, store,
-                                   ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME,
-                                   quick_commands=ASSISTANT_QUICK_COMMANDS,
-                                   knowledge_store=kb_store,
-                                   enable_token_usage=True)
-        bot_registry.append(bot_obj)
-        t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
-        t.start()
-        threads.append(t)
+        try:
+            assistant_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ASSISTANT")), label="비서")
+            store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="assistant")
+            kb_store = KnowledgeStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="assistant")
+            bot_obj = MemoryGeminiBot("똑똑한 너구리", smart_token, assistant_router, store,
+                                       ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME,
+                                       quick_commands=ASSISTANT_QUICK_COMMANDS,
+                                       knowledge_store=kb_store,
+                                       enable_token_usage=True)
+            bot_registry.append(bot_obj)
+            t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
+            t.start()
+            threads.append(t)
+        except Exception as e:
+            logger.error(f"똑똑한 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
+            assistant_router = None
     else:
         logger.warning("TELEGRAM_TOKEN_SMART 없어서 똑똑한 너구리는 건너뜁니다.")
 
     mail_router = None
-    mail_token = os.environ.get("TELEGRAM_TOKEN_MAIL")
+    mail_token = _get_env_token("TELEGRAM_TOKEN_MAIL")
     if mail_token:
-        mail_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_MAIL")), label="메일")
-        store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="mail")
-        bot_obj = MemoryGeminiBot("메일작성용 너구리", mail_token, mail_router, store,
-                                   MAIL_INSTRUCTION, MAIL_WELCOME)
-        bot_registry.append(bot_obj)
-        t = threading.Thread(target=run_forever, args=(bot_obj, "메일작성용 너구리"), daemon=True)
-        t.start()
-        threads.append(t)
+        try:
+            mail_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_MAIL")), label="메일")
+            store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="mail")
+            bot_obj = MemoryGeminiBot("메일작성용 너구리", mail_token, mail_router, store,
+                                       MAIL_INSTRUCTION, MAIL_WELCOME)
+            bot_registry.append(bot_obj)
+            t = threading.Thread(target=run_forever, args=(bot_obj, "메일작성용 너구리"), daemon=True)
+            t.start()
+            threads.append(t)
+        except Exception as e:
+            logger.error(f"메일작성용 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
+            mail_router = None
     else:
         logger.warning("TELEGRAM_TOKEN_MAIL 없어서 메일작성용 너구리는 건너뜁니다.")
 
     casual_router = None
-    casual_token = os.environ.get("TELEGRAM_TOKEN_CASUAL")
+    casual_token = _get_env_token("TELEGRAM_TOKEN_CASUAL")
     if casual_token:
-        casual_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_CASUAL")), label="잡담")
-        store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
-        bot_obj = MemoryGeminiBot("심심할 때 너구리", casual_token, casual_router, store,
-                                   CASUAL_INSTRUCTION, CASUAL_WELCOME)
-        bot_registry.append(bot_obj)
-        t = threading.Thread(target=run_forever, args=(bot_obj, "심심할 때 너구리"), daemon=True)
-        t.start()
-        threads.append(t)
+        try:
+            casual_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_CASUAL")), label="잡담")
+            store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
+            bot_obj = MemoryGeminiBot("심심할 때 너구리", casual_token, casual_router, store,
+                                       CASUAL_INSTRUCTION, CASUAL_WELCOME)
+            bot_registry.append(bot_obj)
+            t = threading.Thread(target=run_forever, args=(bot_obj, "심심할 때 너구리"), daemon=True)
+            t.start()
+            threads.append(t)
+        except Exception as e:
+            logger.error(f"심심할 때 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
+            casual_router = None
     else:
         logger.warning("TELEGRAM_TOKEN_CASUAL 없어서 심심할 때 너구리는 건너뜁니다.")
 
     alarm_router = None
-    alarm_token = os.environ.get("TELEGRAM_TOKEN_ALARM")
+    alarm_token = _get_env_token("TELEGRAM_TOKEN_ALARM")
     if alarm_token:
-        alarm_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ALARM")), label="알람")
-        bot_obj = NeoguriAlarmBot("알람너구리", alarm_token, alarm_router)
-        bot_registry.append(bot_obj)
-        t = threading.Thread(target=run_forever, args=(bot_obj, "알람너구리"), daemon=True)
-        t.start()
-        threads.append(t)
+        try:
+            alarm_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ALARM")), label="알람")
+            bot_obj = NeoguriAlarmBot("알람너구리", alarm_token, alarm_router)
+            bot_registry.append(bot_obj)
+            t = threading.Thread(target=run_forever, args=(bot_obj, "알람너구리"), daemon=True)
+            t.start()
+            threads.append(t)
+        except Exception as e:
+            logger.error(f"알람너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
+            alarm_router = None
     else:
         logger.warning("TELEGRAM_TOKEN_ALARM 없어서 알람너구리는 건너뜁니다.")
 
