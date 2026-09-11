@@ -74,7 +74,7 @@ class MemoryGeminiBot:
                  enable_token_usage: bool = False,
                  enable_session_confirmation: bool = False):
         self.name = name
-        self.bot = telebot.TeleBot(token)
+        self.bot = telebot.TeleBot(token, threaded=False)
         self.router = router
         self.store = store
         self.base_instruction = base_instruction

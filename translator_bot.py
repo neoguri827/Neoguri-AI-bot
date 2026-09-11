@@ -55,7 +55,7 @@ TRANSLATOR_BOT_DEFS = [
 class NeoguriTranslatorBot:
     def __init__(self, name: str, token: str, instruction: str, router: GeminiRouter):
         self.name = name
-        self.bot = telebot.TeleBot(token)
+        self.bot = telebot.TeleBot(token, threaded=False)
         self.router = router
         self.config = types.GenerateContentConfig(system_instruction=instruction)
         self._register_handlers()

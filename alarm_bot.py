@@ -36,7 +36,7 @@ class NeoguriAlarmBot:
     def __init__(self, name: str, token: str, router: GeminiRouter,
                  interval_seconds: int = ALARM_INTERVAL_SECONDS):
         self.name = name
-        self.bot = telebot.TeleBot(token)
+        self.bot = telebot.TeleBot(token, threaded=False)
         self.router = router
         self.interval_seconds = interval_seconds
         self.config = types.GenerateContentConfig(
