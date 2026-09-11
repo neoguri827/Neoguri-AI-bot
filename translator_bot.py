@@ -76,7 +76,7 @@ class NeoguriTranslatorBot:
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
         def handle_myid(message: Message):
-            self.bot.send_message(message.chat.id, f"🆔 chat_id: `{message.chat.id}`", parse_mode='Markdown')
+            self.bot.send_message(message.chat.id, f"🆔 chat_id: {message.chat.id}")
 
         @self.bot.message_handler(commands=['uptime'])
         def handle_uptime(message: Message):
