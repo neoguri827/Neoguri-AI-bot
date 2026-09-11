@@ -22,7 +22,7 @@ EXTRACTION_PROMPT = (
     "이 문서의 전체 내용을 최대한 원문 그대로 텍스트로 옮겨 적어줘. "
     "표가 있으면 구조를 유지하고, 요약하지 말고 전체 내용을 빠짐없이 옮겨 적어줘."
 )
-GROUP_DEBOUNCE_SECONDS = 3.5
+GROUP_DEBOUNCE_SECONDS = 3.0
 
 
 def extract_remember_name(caption: str, fallback_name: str) -> Optional[str]:
@@ -229,7 +229,7 @@ class MemoryGeminiBot:
         items = group["items"]
         remember_base = None
         if caption == REMEMBER_TRIGGER:
-            remember_base = None  # 이름 생략, 각 파일명으로 저장
+            remember_base = None
         elif caption.startswith(REMEMBER_TRIGGER):
             remember_base = caption[len(REMEMBER_TRIGGER):].strip(" :-") or None
             if remember_base is None:
@@ -260,7 +260,6 @@ class MemoryGeminiBot:
             except Exception:
                 self.bot.send_message(chat_id, result)
         else:
-            # 저장 요청이 아니면, 대표로 첫 번째 파일만 분석하고 안내
             self.bot.send_message(chat_id, f"ℹ️ 파일 {len(items)}개를 받았습니다. 여러 파일 동시 분석은 지원하지 않아 첫 번째 파일만 분석합니다.\n"
                                             f"전체를 저장하려면 캡션에 '{REMEMBER_TRIGGER}'를 붙여 다시 보내주세요.")
             self._handle_single_file(items[0])
@@ -317,7 +316,7 @@ class MemoryGeminiBot:
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
         def handle_myid(message: Message):
-            self.bot.send_message(message.chat.id, f"🆔 chat_id: `{message.chat.id}`", parse_mode='Markdown')
+            self.bot.send_message(message.chat.id, f"🆔 chat_id: {message.chat.id}")
 
         @self.bot.message_handler(commands=['uptime'])
         def handle_uptime(message: Message):
@@ -329,7 +328,7 @@ class MemoryGeminiBot:
             if not is_allowed(chat_id):
                 self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
                 return
-            self.bot.send_message(chat_id, f"🧠 현재 사용 중인 모델: `{self.router.model_name}`", parse_mode='Markdown')
+            self.bot.send_message(chat_id, f"🧠 현재 사용 중인 모델: {self.router.model_name}")
 
         @self.bot.message_handler(commands=['search'])
         def handle_search_toggle(message: Message):
