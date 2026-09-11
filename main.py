@@ -67,7 +67,9 @@ def main():
                                        knowledge_store=kb_store,
                                        enable_token_usage=True,
                                        enable_session_confirmation=True,
-                                       complexity_classifier=classify_complexity)
+                                       complexity_classifier=classify_complexity,
+                                       temperature={"flash": 0.5, "pro": 0.2},
+                                       max_output_tokens={"flash": 1024, "pro": 4096})
             t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
             t.start()
             threads.append(t)
@@ -82,7 +84,8 @@ def main():
             mail_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_MAIL")), label="메일")
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="mail")
             bot_obj = MemoryGeminiBot("메일작성용 너구리", mail_token, mail_router, store,
-                                       MAIL_INSTRUCTION, MAIL_WELCOME)
+                                       MAIL_INSTRUCTION, MAIL_WELCOME,
+                                       temperature=0.4, max_output_tokens=2048)
             t = threading.Thread(target=run_forever, args=(bot_obj, "메일작성용 너구리"), daemon=True)
             t.start()
             threads.append(t)
@@ -97,7 +100,8 @@ def main():
             puppy_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_CASUAL")), label="개아")
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
             bot_obj = MemoryGeminiBot("개아", puppy_token, puppy_router, store,
-                                       PUPPY_INSTRUCTION, PUPPY_WELCOME)
+                                       PUPPY_INSTRUCTION, PUPPY_WELCOME,
+                                       max_output_tokens=300)
             t = threading.Thread(target=run_forever, args=(bot_obj, "개아"), daemon=True)
             t.start()
             threads.append(t)
@@ -128,7 +132,8 @@ def main():
             kb_store = KnowledgeStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="directory")
             bot_obj = MemoryGeminiBot("내선/비상연락 너구리", directory_token, directory_router, store,
                                        DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME,
-                                       knowledge_store=kb_store)
+                                       knowledge_store=kb_store,
+                                       temperature=0.2, max_output_tokens=512)
             t = threading.Thread(target=run_forever, args=(bot_obj, "내선/비상연락 너구리"), daemon=True)
             t.start()
             threads.append(t)

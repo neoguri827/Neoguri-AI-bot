@@ -1,7 +1,9 @@
 import os
+import json
 import time
 import logging
-from typing import List, Optional
+import threading
+from typing import Dict, List, Optional
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 logging.basicConfig(
@@ -13,13 +15,33 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_LEN = 4000
 START_TIME = time.time()
 
+# run_forever()가 갱신하는 봇별 실제 상태. /health가 정적 "OK" 대신 이걸 그대로 보여준다.
+_bot_status_lock = threading.Lock()
+BOT_STATUS: Dict[str, dict] = {}
+
+
+def _set_bot_status(name: str, **fields):
+    with _bot_status_lock:
+        BOT_STATUS.setdefault(name, {})
+        BOT_STATUS[name].update(fields)
+        BOT_STATUS[name]["updated_at"] = time.time()
+
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        with _bot_status_lock:
+            snapshot = {name: dict(info) for name, info in BOT_STATUS.items()}
+        # 배포 검증(Render 헬스체크)이 이 엔드포인트로 죽지 않도록 HTTP 상태는 항상 200으로 두고,
+        # 실제 상태는 바디에 담아 "정상"이라는 거짓말 대신 진짜 정보를 보여준다.
+        payload = {
+            "status": "ok" if snapshot and all(b.get("state") == "running" for b in snapshot.values()) else "starting_or_degraded",
+            "bots": snapshot,
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
-        self.send_header('Content-type', 'application/json')
+        self.send_header('Content-type', 'application/json; charset=utf-8')
         self.end_headers()
-        self.wfile.write(b'{"status": "All Neoguri Bots Running"}')
+        self.wfile.write(body)
 
     def log_message(self, format, *args):
         pass
@@ -117,7 +139,11 @@ def run_forever(bot_obj, name: str):
     while True:
         try:
             logger.info(f"[{name}] 폴링 시작")
+            _set_bot_status(name, state="running", error=None, started_at=time.time())
             bot_obj.run()
+            # infinity_polling은 정상 상황에서 반환되지 않지만, 혹시 반환되면 상태를 남긴다.
+            _set_bot_status(name, state="stopped")
         except Exception as e:
             logger.error(f"[{name}] 폴링이 예외로 중단됨, 5초 후 재시작: {e}", exc_info=True)
+            _set_bot_status(name, state="crashed", error=str(e))
             time.sleep(5)

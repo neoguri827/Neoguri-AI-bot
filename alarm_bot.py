@@ -60,6 +60,8 @@ class NeoguriAlarmBot(TelegramBotBase):
         self.config = types.GenerateContentConfig(
             system_instruction=ALARM_INSTRUCTION,
             tools=[types.Tool(google_search=types.GoogleSearch())],
+            temperature=0.2,  # 시세·수치 브리핑이라 창의성보다 일관성이 중요
+            max_output_tokens=800,
         )
         self._scheduler_started = False
         self._scheduler_lock = threading.Lock()

@@ -57,7 +57,11 @@ class NeoguriTranslatorBot(TelegramBotBase):
         self.name = name
         self.bot = telebot.TeleBot(token, threaded=False)
         self.router = router
-        self.config = types.GenerateContentConfig(system_instruction=instruction)
+        self.config = types.GenerateContentConfig(
+            system_instruction=instruction,
+            temperature=0.2,  # 번역은 창의적 변주보다 일관되고 정확한 결과가 중요
+            max_output_tokens=2048,
+        )
         self._register_handlers()
 
     def _register_handlers(self):

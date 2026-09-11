@@ -73,12 +73,16 @@ class MemoryGeminiBot(TelegramBotBase):
                  knowledge_store: Optional[KnowledgeStore] = None,
                  enable_token_usage: bool = False,
                  enable_session_confirmation: bool = False,
-                 complexity_classifier: Optional[Callable[[str], str]] = None):
+                 complexity_classifier: Optional[Callable[[str], str]] = None,
+                 temperature: Optional[Union[float, Dict[str, float]]] = None,
+                 max_output_tokens: Optional[Union[int, Dict[str, int]]] = None):
         self.name = name
         self.bot = telebot.TeleBot(token, threaded=False)
         self.router = router
         self.store = store
         self.base_instruction = base_instruction
+        self.temperature = temperature
+        self.max_output_tokens = max_output_tokens
         self.welcome_message = welcome_message
         self.quick_commands = quick_commands or {}
         self.knowledge_store = knowledge_store
@@ -138,15 +142,16 @@ class MemoryGeminiBot(TelegramBotBase):
             i += 1
         return f"{base_name} ({i})"
 
-    def _resolve_instruction(self, tier: str) -> str:
-        """base_instruction이 등급별 dict({'flash': ..., 'pro': ...})면 해당 등급의 지시문을,
-        아니면(일반 str) 그 값을 그대로 쓴다. 일상 대화는 가볍게, 전문 질문만 무거운 지시문을 태운다."""
-        if isinstance(self.base_instruction, dict):
-            return self.base_instruction.get(tier) or self.base_instruction.get("flash") or next(iter(self.base_instruction.values()))
-        return self.base_instruction
+    @staticmethod
+    def _resolve_by_tier(value, tier: str):
+        """value가 등급별 dict({'flash': ..., 'pro': ...})면 해당 등급의 값을, 아니면 그대로 반환한다.
+        base_instruction/temperature/max_output_tokens 모두 이 규칙을 공유한다."""
+        if isinstance(value, dict):
+            return value.get(tier) or value.get("flash") or next(iter(value.values()))
+        return value
 
     def _build_config(self, chat_id: int, search_on: bool, tier: str = "flash") -> types.GenerateContentConfig:
-        instruction = self._resolve_instruction(tier)
+        instruction = self._resolve_by_tier(self.base_instruction, tier)
         if self.knowledge_store:
             names = self.knowledge_store.list_names(chat_id)
             if names:
@@ -158,7 +163,14 @@ class MemoryGeminiBot(TelegramBotBase):
                     f"{name_list}"
                 )
         tools = [types.Tool(google_search=types.GoogleSearch())] if search_on else None
-        return types.GenerateContentConfig(system_instruction=instruction, tools=tools)
+        config_kwargs = {"system_instruction": instruction, "tools": tools}
+        temperature = self._resolve_by_tier(self.temperature, tier)
+        if temperature is not None:
+            config_kwargs["temperature"] = temperature
+        max_output_tokens = self._resolve_by_tier(self.max_output_tokens, tier)
+        if max_output_tokens is not None:
+            config_kwargs["max_output_tokens"] = max_output_tokens
+        return types.GenerateContentConfig(**config_kwargs)
 
     def _extract_keywords(self, text: str) -> List[str]:
         tokens = re.split(r"[\s\-_/().,?!\"'。、，:;]+", text)
