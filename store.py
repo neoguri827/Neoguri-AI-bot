@@ -11,7 +11,7 @@ class ChatHistoryStore:
     def _key(self, chat_id: int) -> str:
         return f"{self.namespace}:chat:{chat_id}"
 
-    def load_history(self, chat_id: int, limit: int = 20) -> List[Dict[str, str]]:
+    def load_history(self, chat_id: int, limit: int = 12) -> List[Dict[str, str]]:
         key = self._key(chat_id)
         raw_items = self.redis.lrange(key, -limit, -1)
         history = []
