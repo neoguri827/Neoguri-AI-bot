@@ -103,7 +103,14 @@ def main():
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
             bot_obj = MemoryGeminiBot("개아", puppy_token, puppy_router, store,
                                        PUPPY_INSTRUCTION, PUPPY_WELCOME,
-                                       max_output_tokens=1536)
+                                       max_output_tokens=1536,
+                                       # 그냥 가볍게 나누는 잡담용 봇이라, 다른 봇들과 달리 비용보다
+                                       # "어지간한 건 다 기억하고 이어간다"를 우선한다.
+                                       history_load_limit=60,
+                                       session_max_turns=40,
+                                       session_hard_limit_turns=60,
+                                       session_token_soft_limit=50000,
+                                       session_token_hard_limit=100000)
             t = threading.Thread(target=run_forever, args=(bot_obj, "개아"), daemon=True)
             t.start()
             threads.append(t)

@@ -75,7 +75,12 @@ class MemoryGeminiBot(TelegramBotBase):
                  enable_session_confirmation: bool = False,
                  complexity_classifier: Optional[Callable[[str], str]] = None,
                  temperature: Optional[Union[float, Dict[str, float]]] = None,
-                 max_output_tokens: Optional[Union[int, Dict[str, int]]] = None):
+                 max_output_tokens: Optional[Union[int, Dict[str, int]]] = None,
+                 history_load_limit: int = HISTORY_LOAD_LIMIT,
+                 session_max_turns: int = SESSION_MAX_TURNS,
+                 session_hard_limit_turns: int = SESSION_HARD_LIMIT_TURNS,
+                 session_token_soft_limit: int = SESSION_TOKEN_SOFT_LIMIT,
+                 session_token_hard_limit: int = SESSION_TOKEN_HARD_LIMIT):
         self.name = name
         self.bot = telebot.TeleBot(token, threaded=False)
         self.router = router
@@ -89,6 +94,11 @@ class MemoryGeminiBot(TelegramBotBase):
         self.enable_token_usage = enable_token_usage
         self.enable_session_confirmation = enable_session_confirmation
         self.complexity_classifier = complexity_classifier
+        self.history_load_limit = history_load_limit
+        self.session_max_turns = session_max_turns
+        self.session_hard_limit_turns = session_hard_limit_turns
+        self.session_token_soft_limit = session_token_soft_limit
+        self.session_token_hard_limit = session_token_hard_limit
         self.user_sessions: Dict[int, Any] = {}
         self.session_last_used: Dict[int, float] = {}
         self.session_tier: Dict[int, str] = {}
@@ -227,7 +237,7 @@ class MemoryGeminiBot(TelegramBotBase):
             self._forget_session(chat_id)
         if chat_id not in self.user_sessions:
             self._evict_stale_sessions()
-            history = self._history_to_genai_format(self.store.load_history(chat_id, limit=HISTORY_LOAD_LIMIT))
+            history = self._history_to_genai_format(self.store.load_history(chat_id, limit=self.history_load_limit))
             search_on = self.search_enabled.get(chat_id, False)
             config = self._build_config(chat_id, search_on, tier)
             self.user_sessions[chat_id] = self.router.create_chat(history=history, config=config, tier=tier)
@@ -250,11 +260,11 @@ class MemoryGeminiBot(TelegramBotBase):
         if usage is not None:
             prompt_tokens = getattr(usage, "prompt_token_count", None)
 
-        hit_hard_limit = count >= SESSION_HARD_LIMIT_TURNS or (
-            prompt_tokens is not None and prompt_tokens >= SESSION_TOKEN_HARD_LIMIT
+        hit_hard_limit = count >= self.session_hard_limit_turns or (
+            prompt_tokens is not None and prompt_tokens >= self.session_token_hard_limit
         )
-        hit_soft_limit = count >= SESSION_MAX_TURNS or (
-            prompt_tokens is not None and prompt_tokens >= SESSION_TOKEN_SOFT_LIMIT
+        hit_soft_limit = count >= self.session_max_turns or (
+            prompt_tokens is not None and prompt_tokens >= self.session_token_soft_limit
         )
 
         if hit_hard_limit:
