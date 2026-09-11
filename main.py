@@ -11,6 +11,7 @@ from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS
 from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
 from casual_bot import CASUAL_INSTRUCTION, CASUAL_WELCOME
+from alarm_bot import NeoguriAlarmBot
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
@@ -85,6 +86,18 @@ def main():
     else:
         logger.warning("TELEGRAM_TOKEN_CASUAL 없어서 심심할 때 너구리는 건너뜁니다.")
 
+    alarm_router = None
+    alarm_token = os.environ.get("TELEGRAM_TOKEN_ALARM")
+    if alarm_token:
+        alarm_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ALARM")), label="알람")
+        bot_obj = NeoguriAlarmBot("너구리 알람봇", alarm_token, alarm_router)
+        bot_registry.append(bot_obj)
+        t = threading.Thread(target=run_forever, args=(bot_obj, "너구리 알람봇"), daemon=True)
+        t.start()
+        threads.append(t)
+    else:
+        logger.warning("TELEGRAM_TOKEN_ALARM 없어서 너구리 알람봇은 건너뜁니다.")
+
     if not threads:
         raise ValueError("실행 가능한 봇이 없습니다. 환경변수를 확인하세요.")
 
@@ -104,7 +117,7 @@ def main():
                 except Exception as e:
                     logger.warning(f"다운그레이드 알림 전송 실패(chat_id={chat_id}): {e}")
 
-        for router in (translate_router, assistant_router, mail_router, casual_router):
+        for router in (translate_router, assistant_router, mail_router, casual_router, alarm_router):
             if router is not None:
                 router.on_downgrade = notify_downgrade
 
