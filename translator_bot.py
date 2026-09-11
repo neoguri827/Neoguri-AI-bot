@@ -1,9 +1,10 @@
 import logging
 import telebot
+from typing import Dict
 from telebot.types import Message
 from google.genai import types
 
-from common import is_allowed, get_uptime_str
+from common import is_allowed, get_uptime_str, format_token_usage
 from router import GeminiRouter
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ class NeoguriTranslatorBot:
         self.bot = telebot.TeleBot(token)
         self.router = router
         self.config = types.GenerateContentConfig(system_instruction=instruction)
+        self.show_tokens: Dict[int, bool] = {}
         self._register_handlers()
 
     def _register_handlers(self):
@@ -81,6 +83,21 @@ class NeoguriTranslatorBot:
         @self.bot.message_handler(commands=['uptime'])
         def handle_uptime(message: Message):
             self.bot.send_message(message.chat.id, f"⏱ 서버 연속 가동 시간: {get_uptime_str()}")
+
+        @self.bot.message_handler(commands=['tokens'])
+        def handle_tokens_toggle(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
+                return
+            parts = message.text.split()
+            if len(parts) < 2 or parts[1].lower() not in ('on', 'off'):
+                current = "켜짐" if self.show_tokens.get(chat_id, False) else "꺼짐"
+                self.bot.send_message(chat_id, f"현재 토큰 사용량 표시: {current}\n사용법: /tokens on 또는 /tokens off")
+                return
+            enable = parts[1].lower() == 'on'
+            self.show_tokens[chat_id] = enable
+            self.bot.send_message(chat_id, f"🔢 토큰 사용량 표시를 {'켰습니다' if enable else '껐습니다'}.")
 
         @self.bot.message_handler(commands=['start'])
         def handle_start(message: Message):
@@ -99,6 +116,7 @@ class NeoguriTranslatorBot:
             self.bot.send_message(
                 message.chat.id,
                 "사용법: 문장을 그대로 보내면 번역문만 반환합니다.\n"
+                "/tokens on|off - 답변마다 토큰 사용량 표시 켜기/끄기 (기본 꺼짐)\n"
                 "/myid - 내 chat_id 확인\n"
                 "/uptime - 서버 연속 가동 시간 확인\n"
                 "/help - 이 도움말 보기"
@@ -113,7 +131,10 @@ class NeoguriTranslatorBot:
             self.bot.send_chat_action(chat_id, 'typing')
             try:
                 response = self.router.generate(contents=message.text, config=self.config)
-                self.bot.send_message(chat_id, response.text or EMPTY_REPLY_FALLBACK)
+                reply_text = response.text or EMPTY_REPLY_FALLBACK
+                if self.show_tokens.get(chat_id, False):
+                    reply_text += format_token_usage(response)
+                self.bot.send_message(chat_id, reply_text)
             except Exception as e:
                 logger.error(f"[{self.name}] 예외 발생 (Chat ID: {chat_id}): {e}", exc_info=True)
                 self.bot.send_message(chat_id, "⚠️ 번역 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
