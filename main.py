@@ -48,7 +48,8 @@ def main():
         bot_obj = MemoryGeminiBot("똑똑한 너구리", smart_token, assistant_router, store,
                                    ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME,
                                    quick_commands=ASSISTANT_QUICK_COMMANDS,
-                                   knowledge_store=kb_store)
+                                   knowledge_store=kb_store,
+                                   enable_token_usage=True)
         bot_registry.append(bot_obj)
         t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
         t.start()
@@ -93,7 +94,7 @@ def main():
 
     if notifier_bot is not None:
         def notify_downgrade(label: str, old_model: str, new_model: str):
-            text = f"⚠️ [{label}] 모델이 하위 등급으로 전환됐습니다.\n{old_model} → {new_model}"
+            text = f"[{label}] 모델이 하위 등급으로 전환됐습니다.\n{old_model} → {new_model}"
             if not ALLOWED_CHAT_IDS:
                 logger.warning(f"알림 받을 chat_id가 없습니다(ALLOWED_CHAT_IDS 미설정): {text}")
                 return
