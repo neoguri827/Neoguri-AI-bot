@@ -678,6 +678,30 @@ class MemoryGeminiBot:
             else:
                 self.bot.send_message(chat_id, f"'{name}'이라는 이름의 저장된 자료를 찾지 못했습니다. /kb로 목록을 확인하세요.")
 
+        @self.bot.message_handler(commands=['export'])
+        def handle_export(message: Message):
+            chat_id = message.chat.id
+            if not is_allowed(chat_id):
+                self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
+                return
+            if not self.knowledge_store:
+                self.bot.send_message(chat_id, "이 봇은 영구 자료 저장 기능이 없습니다.")
+                return
+            name = message.text.partition(' ')[2].strip()
+            if not name:
+                self.bot.send_message(chat_id, "사용법: /export 문서이름 (목록은 /kb)")
+                return
+            content = self.knowledge_store.get(chat_id, name)
+            if content is None:
+                self.bot.send_message(chat_id, f"'{name}'이라는 이름의 저장된 자료를 찾지 못했습니다. /kb로 목록을 확인하세요.")
+                return
+            buffer = io.BytesIO(content.encode('utf-8'))
+            buffer.name = f"{name}.txt"
+            self.bot.send_document(
+                chat_id, buffer,
+                caption=f"'{name}' 저장된 내용입니다. (원본 엑셀/PDF가 아니라, 봇이 답변에 쓰는 텍스트 추출본입니다)"
+            )
+
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
             chat_id = message.chat.id
@@ -693,6 +717,7 @@ class MemoryGeminiBot:
                 "저장된 자료는 평소엔 이름만 기억하고 있다가, 질문에 관련 이름/키워드가 나오면 그때만 "
                 "관련된 부분만 발췌해서 참고합니다 (문서 전체를 매번 불러오지 않아 비용이 절감됩니다).\n"
                 "/kb - 저장된 자료 목록 확인\n"
+                "/export 문서이름 - 저장된 자료를 텍스트 파일로 다운로드 (원본 파일이 아닌 추출된 텍스트)\n"
                 "/forget 문서이름 - 저장된 자료 삭제"
                 if self.knowledge_store else ""
             )
