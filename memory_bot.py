@@ -32,6 +32,11 @@ SESSION_HARD_LIMIT_TURNS = 5    # 응답이 없어도 이 턴 수를 넘으면 �
 SESSION_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
 MAX_CACHED_SESSIONS = 200
 MIN_LOCAL_PDF_TEXT_LENGTH = 100
+MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # Telegram Bot API가 이보다 큰 파일은 getFile로 받을 수 없음
+
+
+class FileTooLargeError(Exception):
+    pass
 
 STOPWORDS = {
     "그리고", "그런데", "그래서", "하지만", "그러면", "저장해줘", "알려줘", "해줘",
@@ -318,13 +323,22 @@ class MemoryGeminiBot:
         if message.content_type == 'document':
             file_name = message.document.file_name or "문서"
             mime_type = message.document.mime_type or "application/octet-stream"
-            file_info = self.bot.get_file(message.document.file_id)
-            file_bytes = self.bot.download_file(file_info.file_path)
+            file_size = message.document.file_size
+            file_id = message.document.file_id
         else:
             file_name = "사진"
             mime_type = "image/jpeg"
-            file_info = self.bot.get_file(message.photo[-1].file_id)
-            file_bytes = self.bot.download_file(file_info.file_path)
+            file_size = message.photo[-1].file_size
+            file_id = message.photo[-1].file_id
+
+        if file_size and file_size > MAX_FILE_SIZE_BYTES:
+            raise FileTooLargeError(
+                f"{file_name} ({file_size / 1024 / 1024:.1f}MB)이 최대 허용 크기 "
+                f"{MAX_FILE_SIZE_BYTES / 1024 / 1024:.0f}MB를 초과합니다."
+            )
+
+        file_info = self.bot.get_file(file_id)
+        file_bytes = self.bot.download_file(file_info.file_path)
         return file_name, file_bytes, mime_type
 
     def _extract_kb_text(self, file_name: str, file_bytes: bytes, mime_type: str) -> str:
@@ -431,6 +445,9 @@ class MemoryGeminiBot:
                     text = self._extract_kb_text(file_name, file_bytes, mime_type)
                     self.knowledge_store.add(chat_id, kb_name, text)
                     saved.append(kb_name)
+                except FileTooLargeError as e:
+                    logger.warning(f"[{self.name}] 그룹 파일 저장 건너뜀(용량 초과): {e}")
+                    failed.append(str(e))
                 except Exception as e:
                     logger.error(f"[{self.name}] 그룹 파일 저장 실패: {e}", exc_info=True)
                     failed.append(getattr(msg.document, "file_name", "알 수 없는 파일") if msg.content_type == 'document' else "사진")
@@ -458,6 +475,9 @@ class MemoryGeminiBot:
         caption = message.caption or ""
         try:
             file_name, file_bytes, mime_type = self._download_file_payload(message)
+        except FileTooLargeError as e:
+            self.bot.send_message(chat_id, f"⚠️ 파일이 너무 큽니다: {e}")
+            return
         except Exception as e:
             logger.error(f"[{self.name}] 파일 다운로드 실패 (Chat ID: {chat_id}): {e}", exc_info=True)
             self.bot.send_message(chat_id, "⚠️ 파일을 받는 중 오류가 발생했습니다.")
@@ -506,10 +526,9 @@ class MemoryGeminiBot:
     def _register_handlers(self):
         @self.bot.message_handler(commands=['myid'])
         def handle_myid(message: Message):
+            # ALLOWED_CHAT_IDS 등록 전에도 본인 chat_id를 확인할 수 있어야 하므로
+            # 이 명령만 is_allowed 검사를 우회한다.
             chat_id = message.chat.id
-            if not is_allowed(chat_id):
-                self.bot.send_message(chat_id, "⛔ 승인된 사용자만 이용할 수 있습니다.")
-                return
             self.bot.send_message(chat_id, f"🆔 chat_id: {chat_id}")
 
         @self.bot.message_handler(commands=['uptime'])
