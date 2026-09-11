@@ -1,20 +1,18 @@
 import time
 import logging
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import telebot
 from telebot.types import Message
 from google.genai import types
 
-from common import split_message, log_token_usage, ALLOWED_CHAT_IDS, TelegramBotBase
+from common import split_message, log_token_usage, ALLOWED_CHAT_IDS, TelegramBotBase, KST
 from router import GeminiRouter
 from store import AlarmScheduleStore
 
 logger = logging.getLogger(__name__)
 
 ALARM_CHECK_INTERVAL_SECONDS = 60  # 정시가 됐는지 이 주기로 확인 (실제 발송은 시간대당 1회로 제한됨)
-
-KST = timezone(timedelta(hours=9))
 
 ALARM_INSTRUCTION = (
     "너는 시장/뉴스 브리핑 AI다. 반드시 구글 검색을 실제로 호출해 방금 확인한 정보만으로 "
@@ -154,6 +152,8 @@ class NeoguriAlarmBot(TelegramBotBase):
             chat_id = message.chat.id
             if not self._guard(chat_id):
                 return
+            if not self._ai_cooldown_ok(chat_id):
+                return
             self.bot.send_chat_action(chat_id, 'typing')
             try:
                 text = self._build_briefing()
@@ -173,6 +173,7 @@ class NeoguriAlarmBot(TelegramBotBase):
                 f"{ALARM_WELCOME}\n\n"
                 "/now - 지금 바로 브리핑 받기\n"
                 "/uptime - 서버 연속 가동 시간 확인\n"
+                "/usage - 오늘/최근 7일 토큰 사용량 확인 (전체 봇 합산)\n"
                 "/myid - 내 chat_id 확인\n"
                 "/help - 이 도움말 보기"
             )

@@ -93,6 +93,32 @@ class KnowledgeStore:
         return excerpt
 
 
+class UsageStore:
+    """봇별 토큰 사용량을 날짜(KST) 단위로 Upstash에 누적 기록한다.
+    재시작이 잦아도(Render 무료 플랜) 집계가 사라지지 않도록 메모리 대신 여기에 쌓는다."""
+
+    def __init__(self, redis_url: str, redis_token: str, namespace: str = "usage"):
+        self.redis = Redis(url=redis_url, token=redis_token)
+        self.namespace = namespace
+
+    def _key(self, date_str: str) -> str:
+        return f"{self.namespace}:{date_str}"
+
+    def add(self, date_str: str, bot_name: str, total_tokens: int):
+        self.redis.hincrby(self._key(date_str), bot_name, total_tokens)
+
+    def get_day(self, date_str: str) -> Dict[str, int]:
+        raw = self.redis.hgetall(self._key(date_str)) or {}
+        return {k: int(v) for k, v in raw.items()}
+
+    def get_range(self, date_strs: List[str]) -> Dict[str, int]:
+        totals: Dict[str, int] = {}
+        for date_str in date_strs:
+            for bot_name, count in self.get_day(date_str).items():
+                totals[bot_name] = totals.get(bot_name, 0) + count
+        return totals
+
+
 class AlarmScheduleStore:
     """알람봇이 재배포·재시작을 겪어도 같은 시간대에 브리핑을 중복 발송하지 않도록
     마지막으로 발송한 시간대(한국시간 기준 'YYYY-MM-DD HH')를 기억한다."""

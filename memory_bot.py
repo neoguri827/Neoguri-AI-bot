@@ -458,6 +458,8 @@ class MemoryGeminiBot(TelegramBotBase):
             chat_id = message.chat.id
             if not self._guard(chat_id):
                 return
+            if not self._ai_cooldown_ok(chat_id):
+                return
             extra = message.text.partition(' ')[2].strip()
             base_text = template + (f"\n\n[추가 참고 사항]: {extra}" if extra else "")
             prompt, matched_names = self._build_prompt_with_kb(chat_id, base_text)
@@ -739,6 +741,7 @@ class MemoryGeminiBot(TelegramBotBase):
                 "/reset - 대화 기록 초기화\n"
                 f"{tier_line}"
                 "/uptime - 서버 연속 가동 시간 확인\n"
+                "/usage - 오늘/최근 7일 토큰 사용량 확인 (전체 봇 합산)\n"
                 "/myid - 내 chat_id 확인\n"
                 "/help - 이 도움말 보기\n"
                 f"{session_note}"
@@ -768,6 +771,8 @@ class MemoryGeminiBot(TelegramBotBase):
                 return
             if self.awaiting_confirm.get(chat_id) and self._handle_continue_confirmation(chat_id, message.text):
                 return
+            if not self._ai_cooldown_ok(chat_id):
+                return  # 너무 빠른 연속 요청은 조용히 무시(실수 폭주 방지), 매번 경고하면 더 시끄러움
             prompt, matched_names = self._build_prompt_with_kb(chat_id, message.text)
             tier = self._tier_for(message.text)
             self._process_and_reply(chat_id, message.text, prompt, thinking_text=self._thinking_text_for(matched_names), tier=tier)

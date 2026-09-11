@@ -3,9 +3,9 @@ import threading
 
 from google import genai
 
-from common import start_health_server, run_forever, logger
+from common import start_health_server, run_forever, set_usage_store, logger
 from router import GeminiRouter, resolve_api_key
-from store import ChatHistoryStore, KnowledgeStore, AlarmScheduleStore
+from store import ChatHistoryStore, KnowledgeStore, AlarmScheduleStore, UsageStore
 from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS, classify_complexity
@@ -32,6 +32,8 @@ if not UPSTASH_URL or not UPSTASH_TOKEN:
 
 def main():
     threads = []
+
+    set_usage_store(UsageStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="usage"))
 
     translator_tokens = {cfg["name"]: _get_env_token(cfg["token_env"]) for cfg in TRANSLATOR_BOT_DEFS}
     if any(translator_tokens.values()):

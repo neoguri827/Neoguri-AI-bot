@@ -95,6 +95,7 @@ class NeoguriTranslatorBot(TelegramBotBase):
                 "사용법: 문장을 그대로 보내면 번역문만 반환합니다.\n"
                 "/myid - 내 chat_id 확인\n"
                 "/uptime - 서버 연속 가동 시간 확인\n"
+                "/usage - 오늘/최근 7일 토큰 사용량 확인 (전체 봇 합산)\n"
                 "/help - 이 도움말 보기"
             )
 
@@ -102,6 +103,8 @@ class NeoguriTranslatorBot(TelegramBotBase):
         def handle_text(message: Message):
             chat_id = message.chat.id
             if not self._guard(chat_id):
+                return
+            if not self._ai_cooldown_ok(chat_id):
                 return
             self.bot.send_chat_action(chat_id, 'typing')
             try:

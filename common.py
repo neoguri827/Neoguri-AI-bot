@@ -3,6 +3,7 @@ import json
 import time
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_LEN = 4000
 START_TIME = time.time()
+KST = timezone(timedelta(hours=9))
 
 # run_forever()가 갱신하는 봇별 실제 상태. /health가 정적 "OK" 대신 이걸 그대로 보여준다.
 _bot_status_lock = threading.Lock()
@@ -100,14 +102,28 @@ def format_token_usage(response) -> str:
     return f"\n\n토큰 사용: 입력 {prompt_tokens:,} · 출력 {output_tokens:,} · 합계 {total_tokens:,}"
 
 
+_usage_store = None  # main.py가 set_usage_store()로 한 번 주입한다.
+
+
+def set_usage_store(store) -> None:
+    global _usage_store
+    _usage_store = store
+
+
 def log_token_usage(name: str, response) -> None:
-    """호출마다 실제 토큰 사용량을 서버 로그에 남긴다 (Render 로그에서 'text: 토큰 사용:'으로
-    필터링하면 봇별/시간대별 사용량을 추적할 수 있다). 지금까지는 이 기록이 전혀 없었다."""
+    """호출마다 실제 토큰 사용량을 서버 로그에 남기고(Render 로그에서 '토큰 사용:'으로 필터링 가능),
+    usage store가 설정돼 있으면 날짜별 누적치도 함께 쌓는다. 지금까지는 이 기록이 전혀 없었다."""
     usage = _extract_token_usage(response)
     if usage is None:
         return
     prompt_tokens, output_tokens, total_tokens = usage
     logger.info(f"[{name}] 토큰 사용: 입력 {prompt_tokens:,} · 출력 {output_tokens:,} · 합계 {total_tokens:,}")
+    if _usage_store is not None:
+        try:
+            date_str = datetime.now(KST).strftime("%Y-%m-%d")
+            _usage_store.add(date_str, name, total_tokens)
+        except Exception as e:
+            logger.warning(f"[{name}] 사용량 집계 저장 실패: {e}")
 
 
 def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
@@ -128,8 +144,10 @@ def split_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> List[str]:
 
 
 class TelegramBotBase:
-    """모든 너구리 봇이 공통으로 쓰는 /myid, /uptime 명령과 사용자 인증 가드.
-    상속하는 쪽에서 self.bot(TeleBot 인스턴스)을 먼저 만들어둔 뒤 써야 한다."""
+    """모든 너구리 봇이 공통으로 쓰는 /myid, /uptime, /usage 명령과 사용자 인증 가드,
+    AI 호출 쿨다운. 상속하는 쪽에서 self.bot(TeleBot 인스턴스)을 먼저 만들어둔 뒤 써야 한다."""
+
+    AI_COOLDOWN_SECONDS = 1.5
 
     def _guard(self, chat_id: int) -> bool:
         """허용된 사용자면 True, 아니면 안내 메시지를 보내고 False를 반환한다."""
@@ -137,6 +155,18 @@ class TelegramBotBase:
             return True
         self.bot.send_message(chat_id, "승인된 사용자만 이용할 수 있습니다.")
         return False
+
+    def _ai_cooldown_ok(self, chat_id: int) -> bool:
+        """같은 사용자가 아주 짧은 간격으로 AI 호출을 반복하면(실수로 인한 폭주 등)
+        API 호출이 그대로 새나가지 않도록 잠깐 막는다. 정상적인 대화 속도에는 영향 없음."""
+        if not hasattr(self, "_ai_last_call_at"):
+            self._ai_last_call_at = {}
+        now = time.time()
+        last = self._ai_last_call_at.get(chat_id, 0)
+        if now - last < self.AI_COOLDOWN_SECONDS:
+            return False
+        self._ai_last_call_at[chat_id] = now
+        return True
 
     def _register_common_handlers(self):
         @self.bot.message_handler(commands=['myid'])
@@ -151,6 +181,37 @@ class TelegramBotBase:
             if not self._guard(chat_id):
                 return
             self.bot.send_message(chat_id, f"서버 연속 가동 시간: {get_uptime_str()}")
+
+        @self.bot.message_handler(commands=['usage'])
+        def handle_usage(message):
+            chat_id = message.chat.id
+            if not self._guard(chat_id):
+                return
+            if _usage_store is None:
+                self.bot.send_message(chat_id, "사용량 집계 기능이 설정되지 않았습니다.")
+                return
+            today = datetime.now(KST).date()
+            today_str = today.strftime("%Y-%m-%d")
+            week_dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+            try:
+                today_usage = _usage_store.get_day(today_str)
+                week_usage = _usage_store.get_range(week_dates)
+            except Exception as e:
+                logger.warning(f"사용량 조회 실패: {e}")
+                self.bot.send_message(chat_id, "사용량 조회 중 오류가 발생했습니다.")
+                return
+
+            def _fmt(usage: Dict[str, int]) -> str:
+                if not usage:
+                    return "(기록 없음)"
+                lines = [f"- {n}: {c:,} 토큰" for n, c in sorted(usage.items(), key=lambda kv: -kv[1])]
+                lines.append(f"합계: {sum(usage.values()):,} 토큰")
+                return "\n".join(lines)
+
+            self.bot.send_message(
+                chat_id,
+                f"[오늘 {today_str}]\n{_fmt(today_usage)}\n\n[최근 7일 합계]\n{_fmt(week_usage)}"
+            )
 
 
 def run_forever(bot_obj, name: str):
