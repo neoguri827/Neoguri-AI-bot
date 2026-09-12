@@ -199,6 +199,9 @@ class MemoryGeminiBot(TelegramBotBase):
         return list({t.lower() for t in tokens if len(t) >= 2 and t.lower() not in STOPWORDS})
 
     def _find_relevant_kb(self, chat_id: int, query: str) -> List[str]:
+        """저장된 문서 중 질문과 겹치는 게 MAX_AUTO_KB_MATCHES개보다 많으면, 저장된 순서가 아니라
+        겹치는 토큰 수(관련도)가 높은 문서부터 우선한다. 그렇지 않으면 이름이 짧게 겹치는 오래된
+        문서가 슬롯을 먼저 차지해서, 정작 질문과 더 정확히 일치하는 문서가 밀려날 수 있다."""
         if not self.knowledge_store:
             return []
         names = self.knowledge_store.list_names(chat_id)
@@ -206,16 +209,18 @@ class MemoryGeminiBot(TelegramBotBase):
             return []
         query_lower = query.lower()
         query_compact = query.replace(" ", "").lower()
-        matched = []
+        scored = []
         for name in names:
             name_compact = name.replace(" ", "").lower()
             if name_compact and name_compact in query_compact:
-                matched.append(name)
+                scored.append((len(name_compact), name))
                 continue
             tokens = [t for t in re.split(r"[\s\-_/().,]+", name) if len(t) >= 2]
-            if any(t.lower() in query_lower for t in tokens):
-                matched.append(name)
-        return matched[:MAX_AUTO_KB_MATCHES]
+            overlap = sum(1 for t in tokens if t.lower() in query_lower)
+            if overlap:
+                scored.append((overlap, name))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [name for _, name in scored[:MAX_AUTO_KB_MATCHES]]
 
     def _build_prompt_with_kb(self, chat_id: int, user_text: str) -> Tuple[Union[str, list], List[str]]:
         matched_names = self._find_relevant_kb(chat_id, user_text)
