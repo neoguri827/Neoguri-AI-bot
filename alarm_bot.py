@@ -26,7 +26,8 @@ ALARM_INSTRUCTION = (
     "실제로 검색해서 확인한 그 기사의 URL\n\n"
     "헤드라인과 헤드라인 사이는 반드시 빈 줄 하나로 구분해서 5개가 서로 겹치지 않게 띄어 써라. "
     "URL은 검색 결과에서 실제로 확인한 정확한 주소만 적고, 확실하지 않으면 URL 줄은 '확인 불가'로 "
-    "남겨라.\n\n"
+    "남겨라. 가능하면 다음(daum.net) 기사보다 네이버(naver.com) 기사를 우선 골라라 — 검색 결과에 "
+    "네이버 기사가 없을 때만 다른 출처를 써라.\n\n"
     "확인 못하면 '확인 불가'라고 써라. 인사말이나 군더더기 설명 없이 위 형식만 채워라. "
     "마크다운 특수기호와 이모지는 쓰지 말아라."
 )
@@ -62,19 +63,25 @@ class NeoguriAlarmBot(TelegramBotBase):
             system_instruction=ALARM_INSTRUCTION,
             tools=[types.Tool(google_search=types.GoogleSearch())],
             temperature=0.2,  # 뉴스 브리핑이라 창의성보다 일관성이 중요
-            # 헤드라인 7~8개짜리 브리핑인 데다, 검색 도구가 항상 켜져 있어 응답 전에 모델이
+            # 헤드라인 5개짜리 브리핑인 데다, 검색 도구가 항상 켜져 있어 응답 전에 모델이
             # 검색 계획을 세우는 데도 토큰을 쓴다. 너무 타이트하면 실제 답변이 나오기 전에
             # 한도에 걸려 문장이 중간에 끊길 수 있어 여유 있게 잡는다.
             max_output_tokens=2000,
+            # 로그 검토 결과 gemini-3-flash-preview가 이 지시를 받고도 검색 도구를 안 부르는 채로
+            # 수천 토큰을 "생각"만 하다 끝내는 경우가 잦았다(보이는 출력은 100토큰 안팎인데 총
+            # 사용량은 4~5천이었음). 검색 여부 결정에 별 도움이 안 되는 사고에 토큰만 쓰는 셈이라 끈다.
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
         self._scheduler_started = False
         self._scheduler_lock = threading.Lock()
         self._register_handlers()
 
     def _build_briefing(self) -> str:
-        """가끔 모델이 지시를 어기고 검색 도구를 안 부른 채 답하는 경우가 있다(관찰상 10회 중
-        1회 정도). 그러면 ALARM_INSTRUCTION대로 전부 '확인 불가'만 나오는 빈 브리핑이 되므로,
-        검색 근거가 없으면 최대 2번까지 다시 시도한다."""
+        """모델이 지시를 어기고 검색 도구를 안 부른 채 답하는 경우가 있다. 로그 검토 결과 특정
+        모델(gemini-3-flash-preview)에서는 이게 가끔이 아니라 거의 매번이었다 — 같은 모델로 3번
+        재시도해봤자 계속 같은 방식으로 실패할 뿐이었다. 그래서 검색 근거 없이 응답이 오면 재시도
+        전에 다음 flash 모델로 넘어간다. advance_model은 라우터 상태를 영구히 옮기므로, 이후
+        호출들도 이번에 실패한 모델을 자동으로 건너뛰게 된다."""
         response = None
         for attempt in range(3):
             response = self.router.generate(contents=_build_briefing_prompt(), config=self.config)
@@ -82,7 +89,12 @@ class NeoguriAlarmBot(TelegramBotBase):
             if self._log_grounding_info(response):
                 break
             if attempt < 2:
-                logger.warning(f"[{self.name}] 검색 없이 응답이 와서 재시도합니다 ({attempt + 1}/3)")
+                failed_model = self.router.model_name
+                switched = self.router.advance_model("flash")
+                logger.warning(
+                    f"[{self.name}] {failed_model}가 검색 없이 응답해서 재시도합니다 ({attempt + 1}/3)"
+                    + (f" — 다음 모델로 전환: {self.router.model_name}" if switched else " — 더 전환할 모델이 없어 같은 모델로 재시도")
+                )
         return response.text or "정보를 가져오지 못했습니다."
 
     def _log_grounding_info(self, response) -> bool:

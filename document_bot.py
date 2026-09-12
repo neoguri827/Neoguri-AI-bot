@@ -50,6 +50,7 @@ class NeoguriDocumentBot(TelegramBotBase):
             system_instruction=DOCUMENT_INSTRUCTION,
             temperature=0.1,  # 서류 판독이라 창의성보다 정확한 재현이 중요
             max_output_tokens=1200,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),  # 단순 판독이라 추론 불필요
         )
         self._register_handlers()
 

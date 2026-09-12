@@ -76,6 +76,7 @@ class MemoryGeminiBot(TelegramBotBase):
                  complexity_classifier: Optional[Callable[[str], str]] = None,
                  temperature: Optional[Union[float, Dict[str, float]]] = None,
                  max_output_tokens: Optional[Union[int, Dict[str, int]]] = None,
+                 thinking_budget: Optional[Union[int, Dict[str, int]]] = None,
                  history_load_limit: int = HISTORY_LOAD_LIMIT,
                  session_max_turns: int = SESSION_MAX_TURNS,
                  session_hard_limit_turns: int = SESSION_HARD_LIMIT_TURNS,
@@ -88,6 +89,7 @@ class MemoryGeminiBot(TelegramBotBase):
         self.base_instruction = base_instruction
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
+        self.thinking_budget = thinking_budget
         self.welcome_message = welcome_message
         self.quick_commands = quick_commands or {}
         self.knowledge_store = knowledge_store
@@ -155,9 +157,15 @@ class MemoryGeminiBot(TelegramBotBase):
     @staticmethod
     def _resolve_by_tier(value, tier: str):
         """value가 등급별 dict({'flash': ..., 'pro': ...})면 해당 등급의 값을, 아니면 그대로 반환한다.
-        base_instruction/temperature/max_output_tokens 모두 이 규칙을 공유한다."""
+        base_instruction/temperature/max_output_tokens/thinking_budget 모두 이 규칙을 공유한다.
+        `or`로 폴백하면 0처럼 정상적이지만 falsy한 값(예: thinking_budget=0)이 무시되므로 `in`으로
+        키 존재 여부를 직접 확인한다."""
         if isinstance(value, dict):
-            return value.get(tier) or value.get("flash") or next(iter(value.values()))
+            if tier in value:
+                return value[tier]
+            if "flash" in value:
+                return value["flash"]
+            return next(iter(value.values()))
         return value
 
     def _build_config(self, chat_id: int, search_on: bool, tier: str = "flash") -> types.GenerateContentConfig:
@@ -180,6 +188,9 @@ class MemoryGeminiBot(TelegramBotBase):
         max_output_tokens = self._resolve_by_tier(self.max_output_tokens, tier)
         if max_output_tokens is not None:
             config_kwargs["max_output_tokens"] = max_output_tokens
+        thinking_budget = self._resolve_by_tier(self.thinking_budget, tier)
+        if thinking_budget is not None:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget)
         return types.GenerateContentConfig(**config_kwargs)
 
     def _extract_keywords(self, text: str) -> List[str]:

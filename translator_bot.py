@@ -54,6 +54,7 @@ class NeoguriTranslatorBot(TelegramBotBase):
             system_instruction=instruction,
             temperature=0.2,  # 번역은 창의적 변주보다 일관되고 정확한 결과가 중요
             max_output_tokens=2048,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),  # 번역은 추론이 필요 없는 단순 변환
         )
         self._register_handlers()
 

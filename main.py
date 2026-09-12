@@ -72,7 +72,10 @@ def main():
                                        enable_session_confirmation=True,
                                        complexity_classifier=classify_complexity,
                                        temperature={"flash": 0.5, "pro": 0.2},
-                                       max_output_tokens={"flash": 1536, "pro": 4096})
+                                       max_output_tokens={"flash": 1536, "pro": 4096},
+                                       # flash는 간단한 질문 전담이라 추론 사고를 꺼서 토큰 낭비를 줄이고,
+                                       # pro로 승격되는 건 애초에 복잡한 질문이라 추론 예산을 그대로 둔다.
+                                       thinking_budget={"flash": 0, "pro": None})
             t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
             t.start()
             threads.append(t)
@@ -88,7 +91,7 @@ def main():
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="mail")
             bot_obj = MemoryGeminiBot("메일작성용 너구리", mail_token, mail_router, store,
                                        MAIL_INSTRUCTION, MAIL_WELCOME,
-                                       temperature=0.4, max_output_tokens=2048)
+                                       temperature=0.4, max_output_tokens=2048, thinking_budget=0)
             t = threading.Thread(target=run_forever, args=(bot_obj, "메일작성용 너구리"), daemon=True)
             t.start()
             threads.append(t)
@@ -104,7 +107,7 @@ def main():
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
             bot_obj = MemoryGeminiBot("개아", puppy_token, puppy_router, store,
                                        PUPPY_INSTRUCTION, PUPPY_WELCOME,
-                                       max_output_tokens=1536,
+                                       max_output_tokens=1536, thinking_budget=0,
                                        # 그냥 가볍게 나누는 잡담용 봇이라, 다른 봇들과 달리 비용보다
                                        # "어지간한 건 다 기억하고 이어간다"를 우선한다.
                                        history_load_limit=60,
@@ -143,7 +146,7 @@ def main():
             bot_obj = MemoryGeminiBot("내선/비상연락 너구리", directory_token, directory_router, store,
                                        DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME,
                                        knowledge_store=kb_store,
-                                       temperature=0.2, max_output_tokens=1200)
+                                       temperature=0.2, max_output_tokens=1200, thinking_budget=0)
             t = threading.Thread(target=run_forever, args=(bot_obj, "내선/비상연락 너구리"), daemon=True)
             t.start()
             threads.append(t)
