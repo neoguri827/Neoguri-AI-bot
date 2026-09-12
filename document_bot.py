@@ -1,10 +1,9 @@
 import logging
 
-import telebot
 from telebot.types import Message
 from google.genai import types
 
-from common import TelegramBotBase, log_token_usage, split_message
+from common import TelegramBotBase, log_token_usage, make_telebot, split_message
 from router import GeminiRouter
 
 logger = logging.getLogger(__name__)
@@ -44,7 +43,7 @@ DOCUMENT_WELCOME = (
 class NeoguriDocumentBot(TelegramBotBase):
     def __init__(self, name: str, token: str, router: GeminiRouter):
         self.name = name
-        self.bot = telebot.TeleBot(token, threaded=False)
+        self.bot = make_telebot(token)
         self.router = router
         self.config = types.GenerateContentConfig(
             system_instruction=DOCUMENT_INSTRUCTION,

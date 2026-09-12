@@ -1,9 +1,8 @@
 import logging
-import telebot
 from telebot.types import Message
 from google.genai import types
 
-from common import log_token_usage, TelegramBotBase
+from common import log_token_usage, make_telebot, TelegramBotBase
 from router import GeminiRouter
 
 logger = logging.getLogger(__name__)
@@ -48,7 +47,7 @@ TRANSLATOR_BOT_DEFS = [
 class NeoguriTranslatorBot(TelegramBotBase):
     def __init__(self, name: str, token: str, instruction: str, router: GeminiRouter):
         self.name = name
-        self.bot = telebot.TeleBot(token, threaded=False)
+        self.bot = make_telebot(token)
         self.router = router
         self.config = types.GenerateContentConfig(
             system_instruction=instruction,

@@ -7,11 +7,32 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import telebot
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+class QuietPollingConflictHandler(telebot.ExceptionHandler):
+    """Render 배포 전환 중 몇 초간 이전/새 인스턴스가 동시에 getUpdates를 시도하면서
+    나는 409 Conflict는 자동으로 재시도되어 해소되는 정상 노이즈다. telebot 기본 동작은
+    이걸 매번 ERROR + 전체 스택트레이스로 남겨서 실제 장애를 로그에서 찾기 어렵게
+    만들므로, 이 패턴만 한 줄 INFO로 조용히 남기고 나머지 예외는 그대로 telebot의
+    기본 ERROR 로깅에 맡긴다."""
+
+    def handle(self, exception) -> bool:
+        msg = str(exception)
+        if "terminated by other getUpdates request" in msg or "Conflict" in msg:
+            logger.info(f"배포 전환 중 폴링 충돌(정상, 자동 재시도): {msg}")
+            return True
+        return False
+
+
+def make_telebot(token: str) -> telebot.TeleBot:
+    return telebot.TeleBot(token, threaded=False, exception_handler=QuietPollingConflictHandler())
 
 TELEGRAM_MAX_LEN = 4000
 START_TIME = time.time()

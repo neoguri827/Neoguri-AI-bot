@@ -4,12 +4,11 @@ import time
 import logging
 import threading
 from typing import Callable, Dict, Any, List, Union, Optional, Tuple
-import telebot
 import pandas as pd
 from telebot.types import Message
 from google.genai import types
 
-from common import split_message, format_token_usage, log_token_usage, TelegramBotBase
+from common import split_message, format_token_usage, log_token_usage, make_telebot, TelegramBotBase
 from router import GeminiRouter
 from store import ChatHistoryStore, KnowledgeStore
 
@@ -84,7 +83,7 @@ class MemoryGeminiBot(TelegramBotBase):
                  session_token_soft_limit: int = SESSION_TOKEN_SOFT_LIMIT,
                  session_token_hard_limit: int = SESSION_TOKEN_HARD_LIMIT):
         self.name = name
-        self.bot = telebot.TeleBot(token, threaded=False)
+        self.bot = make_telebot(token)
         self.router = router
         self.store = store
         self.base_instruction = base_instruction
