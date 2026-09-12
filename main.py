@@ -5,13 +5,12 @@ from google import genai
 
 from common import start_health_server, run_forever, set_usage_store, logger
 from router import GeminiRouter, resolve_api_key
-from store import ChatHistoryStore, KnowledgeStore, AlarmScheduleStore, UsageStore
+from store import ChatHistoryStore, KnowledgeStore, UsageStore
 from translator_bot import NeoguriTranslatorBot, TRANSLATOR_BOT_DEFS
 from memory_bot import MemoryGeminiBot
 from assistant_bot import ASSISTANT_INSTRUCTION, ASSISTANT_WELCOME, ASSISTANT_QUICK_COMMANDS, classify_complexity
 from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
 from puppy_bot import PUPPY_INSTRUCTION, PUPPY_WELCOME
-from alarm_bot import NeoguriAlarmBot
 from directory_bot import DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME
 from document_bot import NeoguriDocumentBot
 
@@ -122,20 +121,6 @@ def main():
             logger.error(f"개아 초기화 실패, 건너뜁니다: {e}", exc_info=True)
     else:
         logger.warning("TELEGRAM_TOKEN_CASUAL 없어서 개아는 건너뜁니다.")
-
-    alarm_token = _get_env_token("TELEGRAM_TOKEN_ALARM")
-    if alarm_token:
-        try:
-            alarm_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_ALARM")), label="알람")
-            alarm_schedule_store = AlarmScheduleStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="alarm")
-            bot_obj = NeoguriAlarmBot("알람너구리", alarm_token, alarm_router, alarm_schedule_store)
-            t = threading.Thread(target=run_forever, args=(bot_obj, "알람너구리"), daemon=True)
-            t.start()
-            threads.append(t)
-        except Exception as e:
-            logger.error(f"알람너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
-    else:
-        logger.warning("TELEGRAM_TOKEN_ALARM 없어서 알람너구리는 건너뜁니다.")
 
     directory_token = _get_env_token("TELEGRAM_TOKEN_DIRECTORY")
     if directory_token:
