@@ -20,8 +20,13 @@ ALARM_INSTRUCTION = (
     "매우 중요: 오늘 날짜는 네 스스로 추측하지 말고, 사용자 메시지에 명시된 날짜만 사실로 여겨라. "
     "검색어를 만들 때도 반드시 그 날짜(또는 '오늘', '현재' 같은 표현)를 그대로 써라. 그 날짜와 다른 "
     "과거 날짜의 뉴스를 가져오면 안 된다.\n\n"
-    "[주요 뉴스] 경제·사회·국제 등 서로 다른 분야를 섞어서 헤드라인 7~8개를 고르고, 각각 한 줄로 "
-    "요약하라. 같은 주제만 몰아서 고르지 마라.\n\n"
+    "[주요 뉴스] 경제·사회·국제 등 서로 다른 분야를 섞어서 헤드라인 5개를 고르고, 각 헤드라인마다 "
+    "아래 두 줄 형식으로 적어라(같은 주제만 몰아서 고르지 마라):\n"
+    "한 줄 요약\n"
+    "실제로 검색해서 확인한 그 기사의 URL\n\n"
+    "헤드라인과 헤드라인 사이는 반드시 빈 줄 하나로 구분해서 5개가 서로 겹치지 않게 띄어 써라. "
+    "URL은 검색 결과에서 실제로 확인한 정확한 주소만 적고, 확실하지 않으면 URL 줄은 '확인 불가'로 "
+    "남겨라.\n\n"
     "확인 못하면 '확인 불가'라고 써라. 인사말이나 군더더기 설명 없이 위 형식만 채워라. "
     "마크다운 특수기호와 이모지는 쓰지 말아라."
 )
@@ -174,6 +179,18 @@ class NeoguriAlarmBot(TelegramBotBase):
                 logger.error(f"[{self.name}] 즉시 브리핑 실패 (Chat ID: {chat_id}): {e}", exc_info=True)
                 self.bot.send_message(chat_id, "정보를 가져오는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
 
+        @self.bot.message_handler(commands=['reset'])
+        def handle_reset(message: Message):
+            chat_id = message.chat.id
+            if not self._guard(chat_id):
+                return
+            try:
+                self.schedule_store.reset()
+                self.bot.send_message(chat_id, "알람봇 상태를 초기화했습니다. 다음 정시가 되면 새로 브리핑을 보냅니다.")
+            except Exception as e:
+                logger.error(f"[{self.name}] 상태 초기화 실패 (Chat ID: {chat_id}): {e}", exc_info=True)
+                self.bot.send_message(chat_id, "초기화 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+
         @self.bot.message_handler(commands=['help'])
         def handle_help(message: Message):
             chat_id = message.chat.id
@@ -183,6 +200,7 @@ class NeoguriAlarmBot(TelegramBotBase):
                 chat_id,
                 f"{ALARM_WELCOME}\n\n"
                 "/now - 지금 바로 브리핑 받기\n"
+                "/reset - 발송 기록 초기화 (다음 정시에 바로 새로 발송)\n"
                 "/uptime - 서버 연속 가동 시간 확인\n"
                 "/usage - 오늘/최근 7일 토큰 사용량 확인 (전체 봇 합산)\n"
                 "/myid - 내 chat_id 확인\n"

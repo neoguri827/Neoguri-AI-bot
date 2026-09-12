@@ -132,3 +132,6 @@ class AlarmScheduleStore:
 
     def set_last_sent_hour(self, hour_slot: str):
         self.redis.set(self.key, hour_slot)
+
+    def reset(self):
+        self.redis.delete(self.key)
