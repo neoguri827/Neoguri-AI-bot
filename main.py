@@ -13,6 +13,7 @@ from mail_bot import MAIL_INSTRUCTION, MAIL_WELCOME
 from puppy_bot import PUPPY_INSTRUCTION, PUPPY_WELCOME
 from alarm_bot import NeoguriAlarmBot
 from directory_bot import DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME
+from document_bot import NeoguriDocumentBot
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
@@ -150,6 +151,19 @@ def main():
             logger.error(f"내선/비상연락 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
     else:
         logger.warning("TELEGRAM_TOKEN_DIRECTORY 없어서 내선/비상연락 너구리는 건너뜁니다.")
+
+    docs_token = _get_env_token("TELEGRAM_TOKEN_DOCS")
+    if docs_token:
+        try:
+            docs_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_DOCS")), label="서류")
+            bot_obj = NeoguriDocumentBot("서류확인 너구리", docs_token, docs_router)
+            t = threading.Thread(target=run_forever, args=(bot_obj, "서류확인 너구리"), daemon=True)
+            t.start()
+            threads.append(t)
+        except Exception as e:
+            logger.error(f"서류확인 너구리 초기화 실패, 건너뜁니다: {e}", exc_info=True)
+    else:
+        logger.warning("TELEGRAM_TOKEN_DOCS 없어서 서류확인 너구리는 건너뜁니다.")
 
     if not threads:
         raise ValueError("실행 가능한 봇이 없습니다. 환경변수를 확인하세요.")
