@@ -106,9 +106,11 @@ def main():
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="casual")
             bot_obj = MemoryGeminiBot("개아", puppy_token, puppy_router, store,
                                        PUPPY_INSTRUCTION, PUPPY_WELCOME,
-                                       max_output_tokens=1536, thinking_budget=0,
+                                       max_output_tokens=1536, thinking_budget=None,
                                        # 그냥 가볍게 나누는 잡담용 봇이라, 다른 봇들과 달리 비용보다
                                        # "어지간한 건 다 기억하고 이어간다"를 우선한다.
+                                       # thinking_budget은 꺼두면 맥락을 곱씹지 않고 표면적으로만
+                                       # 반응해서 답이 얕아지므로, 비용보다 응답 품질을 우선해 켜둔다.
                                        history_load_limit=60,
                                        session_max_turns=40,
                                        session_hard_limit_turns=60,
