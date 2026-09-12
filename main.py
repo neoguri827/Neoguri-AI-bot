@@ -131,7 +131,11 @@ def main():
             bot_obj = MemoryGeminiBot("내선/비상연락 너구리", directory_token, directory_router, store,
                                        DIRECTORY_INSTRUCTION, DIRECTORY_WELCOME,
                                        knowledge_store=kb_store,
-                                       temperature=0.2, max_output_tokens=1200, thinking_budget=0)
+                                       temperature=0.2, max_output_tokens=1200, thinking_budget=0,
+                                       # 키워드 매칭 발췌(기본 6천자)가 질문 단어와 안 겹치는 부분을
+                                       # 놓쳐서 "제대로 못 읽는다"는 문제가 있었다. 연락처 문서 정도
+                                       # 크기면 토큰을 더 써도 되니 사실상 항상 전체를 넘기게 크게 잡는다.
+                                       kb_max_chars_per_doc=60000)
             t = threading.Thread(target=run_forever, args=(bot_obj, "내선/비상연락 너구리"), daemon=True)
             t.start()
             threads.append(t)

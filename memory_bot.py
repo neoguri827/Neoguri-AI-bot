@@ -77,6 +77,7 @@ class MemoryGeminiBot(TelegramBotBase):
                  temperature: Optional[Union[float, Dict[str, float]]] = None,
                  max_output_tokens: Optional[Union[int, Dict[str, int]]] = None,
                  thinking_budget: Optional[Union[int, Dict[str, int]]] = None,
+                 kb_max_chars_per_doc: int = MAX_KB_CHARS_PER_DOC,
                  history_load_limit: int = HISTORY_LOAD_LIMIT,
                  session_max_turns: int = SESSION_MAX_TURNS,
                  session_hard_limit_turns: int = SESSION_HARD_LIMIT_TURNS,
@@ -90,6 +91,7 @@ class MemoryGeminiBot(TelegramBotBase):
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self.thinking_budget = thinking_budget
+        self.kb_max_chars_per_doc = kb_max_chars_per_doc
         self.welcome_message = welcome_message
         self.quick_commands = quick_commands or {}
         self.knowledge_store = knowledge_store
@@ -223,11 +225,11 @@ class MemoryGeminiBot(TelegramBotBase):
         keywords = self._extract_keywords(user_text)
         parts = []
         for name in matched_names:
-            excerpt = self.knowledge_store.get_relevant_excerpt(chat_id, name, keywords, MAX_KB_CHARS_PER_DOC)
+            excerpt = self.knowledge_store.get_relevant_excerpt(chat_id, name, keywords, self.kb_max_chars_per_doc)
             if excerpt:
                 parts.append(f"[참고자료: {name}]\n{excerpt}")
         parts.append(user_text)
-        logger.info(f"[{self.name}] 참고자료 자동 매칭: {matched_names} (문서당 최대 {MAX_KB_CHARS_PER_DOC:,}자 발췌)")
+        logger.info(f"[{self.name}] 참고자료 자동 매칭: {matched_names} (문서당 최대 {self.kb_max_chars_per_doc:,}자 발췌)")
         return parts, matched_names
 
     def _thinking_text_for(self, matched_names: List[str]) -> str:
