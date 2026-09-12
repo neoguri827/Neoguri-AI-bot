@@ -23,7 +23,7 @@ EXTRACTION_PROMPT = (
     "표가 있으면 구조를 유지하고, 요약하지 말고 전체 내용을 빠짐없이 옮겨 적어줘."
 )
 GROUP_DEBOUNCE_SECONDS = 3.0
-MAX_AUTO_KB_MATCHES = 2
+MAX_AUTO_KB_MATCHES = 5
 MAX_KB_CHARS_PER_DOC = 6000
 HISTORY_LOAD_LIMIT = 8
 SESSION_MAX_TURNS = 3           # 이 턴 수에 도달하면 계속 기억할지 사용자에게 확인 (안전장치, 토큰 조회 실패 시에도 동작)
