@@ -74,7 +74,14 @@ def main():
                                        max_output_tokens={"flash": 1536, "pro": 4096},
                                        # flash는 간단한 질문 전담이라 추론 사고를 꺼서 토큰 낭비를 줄이고,
                                        # pro로 승격되는 건 애초에 복잡한 질문이라 추론 예산을 그대로 둔다.
-                                       thinking_budget={"flash": 0, "pro": None})
+                                       thinking_budget={"flash": 0, "pro": None},
+                                       # 감사보고서 등 KB 문서를 여러 개(최대 5개 × 6,000자) 참고하면 한
+                                       # 턴만으로도 기본값(소프트 6,000/하드 12,000)을 가볍게 넘어서, 질문마다
+                                       # "계속 기억할까요?" 확인이 뜨거나 세션이 조용히 강제 리셋됐다. 이 봇의
+                                       # 실제 사용 패턴에 맞춰 한도를 올려, 진짜 대화가 과도하게 길어질 때만
+                                       # 걸리게 한다.
+                                       session_token_soft_limit=40000,
+                                       session_token_hard_limit=80000)
             t = threading.Thread(target=run_forever, args=(bot_obj, "똑똑한 너구리"), daemon=True)
             t.start()
             threads.append(t)
