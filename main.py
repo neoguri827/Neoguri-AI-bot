@@ -153,7 +153,13 @@ def main():
                                        # ("비상연락망")을 담고 있지 않아서, 이름 매칭에 맡기면 대부분
                                        # 실패하고 모델이 근거 없이 답을 지어낸다. 문서가 2개뿐이고 작으니
                                        # 항상 전부 넣는다.
-                                       always_include_all_kb=True)
+                                       always_include_all_kb=True,
+                                       # 문서 2개를 항상 같이 넣다 보니 첫 턴만으로도 기본 하드 한도
+                                       # (12,000)에 근접/초과할 수 있다. 그러면 확인 없이 세션이 조용히
+                                       # 강제 리셋되면서 "이미 읽음" 기록도 같이 날아가 곧바로 다시
+                                       # 읽는 헛수고가 재발하므로, 이 봇 문서 크기에 맞춰 한도를 올린다.
+                                       session_token_soft_limit=20000,
+                                       session_token_hard_limit=40000)
             t = threading.Thread(target=run_forever, args=(bot_obj, "내선/비상연락 너구리"), daemon=True)
             t.start()
             threads.append(t)
