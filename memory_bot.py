@@ -110,6 +110,7 @@ class MemoryGeminiBot(TelegramBotBase):
         self.pending_notice: Dict[int, str] = {}
         self.search_enabled: Dict[int, bool] = {}
         self.show_tokens: Dict[int, bool] = {}
+        self.session_injected_kb: Dict[int, set] = {}
         self._group_lock = threading.Lock()
         self._pending_groups: Dict[str, dict] = {}
         self._register_handlers()
@@ -121,6 +122,7 @@ class MemoryGeminiBot(TelegramBotBase):
         self.session_turn_count.pop(chat_id, None)
         self.awaiting_confirm.pop(chat_id, None)
         self.pending_notice.pop(chat_id, None)
+        self.session_injected_kb.pop(chat_id, None)
 
     def _tier_for(self, text: str) -> str:
         if not self.complexity_classifier:
@@ -226,15 +228,24 @@ class MemoryGeminiBot(TelegramBotBase):
         matched_names = self._find_relevant_kb(chat_id, user_text)
         if not matched_names:
             return user_text, []
+        # 이번 세션 대화 기록에 이미 붙여 넣은 문서는, 질문에 키워드가 다시 걸려도 재첨부하지 않는다.
+        # 세션이 살아있는 한 그 내용은 Gemini 쪽 히스토리에 그대로 남아있어서, 다시 붙이면 같은 내용이
+        # 중복으로 쌓여 턴마다 입력 토큰만 불어난다. 세션이 리셋되면(session_injected_kb도 함께 비워짐)
+        # 다시 한 번은 새로 읽는다.
+        already_injected = self.session_injected_kb.setdefault(chat_id, set())
+        new_names = [n for n in matched_names if n not in already_injected]
+        if not new_names:
+            return user_text, []
         keywords = self._extract_keywords(user_text)
         parts = []
-        for name in matched_names:
+        for name in new_names:
             excerpt = self.knowledge_store.get_relevant_excerpt(chat_id, name, keywords, self.kb_max_chars_per_doc)
             if excerpt:
                 parts.append(f"[참고자료: {name}]\n{excerpt}")
         parts.append(user_text)
-        logger.info(f"[{self.name}] 참고자료 자동 매칭: {matched_names} (문서당 최대 {self.kb_max_chars_per_doc:,}자 발췌)")
-        return parts, matched_names
+        already_injected.update(new_names)
+        logger.info(f"[{self.name}] 참고자료 자동 매칭: {new_names} (문서당 최대 {self.kb_max_chars_per_doc:,}자 발췌)")
+        return parts, new_names
 
     def _thinking_text_for(self, matched_names: List[str]) -> str:
         if not matched_names:
