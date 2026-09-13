@@ -43,13 +43,18 @@ class GeminiRouter:
 
     MAX_MODEL_SWITCHES_PER_CALL = 6
 
-    def __init__(self, client: genai.Client, label: str = ""):
+    def __init__(self, client: genai.Client, label: str = "", pinned_flash_model: str = None):
         self.client = client
         self.label = label
         self._lock = threading.Lock()
         flash, pro = self._discover_models()
         self.flash_models = flash or list(self.FALLBACK_FLASH_MODELS)
         self.pro_models = pro or list(self.FALLBACK_PRO_MODELS)
+        if pinned_flash_model:
+            # 단순 조회용 봇처럼 굳이 최신/고성능 flash를 자동으로 고를 필요 없는 경우, 지정한
+            # 기본 모델을 1순위로 강제한다. 그 모델이 나중에 막히면(429/404 등) 기존 자동전환
+            # 로직이 그대로 나머지 발견된 모델로 넘어가므로 안전망은 유지된다.
+            self.flash_models = [pinned_flash_model] + [m for m in self.flash_models if m != pinned_flash_model]
         self.flash_index = 0
         self.pro_index = 0
         logger.info(
