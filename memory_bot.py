@@ -124,13 +124,20 @@ class MemoryGeminiBot(TelegramBotBase):
         self.pending_notice.pop(chat_id, None)
         self.session_injected_kb.pop(chat_id, None)
 
-    def _tier_for(self, text: str) -> str:
+    def _tier_for(self, chat_id: int, text: str) -> str:
         if not self.complexity_classifier:
             return "flash"
         try:
-            return self.complexity_classifier(text)
+            tier = self.complexity_classifier(text)
         except Exception:
-            return "flash"
+            tier = "flash"
+        if tier == "flash" and self.session_tier.get(chat_id) == "pro":
+            # 이미 pro로 올라간 세션인데 이번 메시지만 단순해 보인다고 flash로 내리면
+            # 세션이 재생성되면서 그동안 참고했던 KB 문서까지 히스토리에서 사라진다.
+            # 그러면 몇 분 뒤 같은 문서를 다시 매칭해서 또 읽는 낭비가 생기므로,
+            # 한 번 pro가 되면 이 대화가 끝나거나 /reset 하기 전까지는 pro를 유지한다.
+            return "pro"
+        return tier
 
     def _evict_stale_sessions(self):
         now = time.time()
@@ -812,7 +819,7 @@ class MemoryGeminiBot(TelegramBotBase):
             if not self._ai_cooldown_ok(chat_id):
                 return  # 너무 빠른 연속 요청은 조용히 무시(실수 폭주 방지), 매번 경고하면 더 시끄러움
             prompt, matched_names = self._build_prompt_with_kb(chat_id, message.text)
-            tier = self._tier_for(message.text)
+            tier = self._tier_for(chat_id, message.text)
             self._process_and_reply(chat_id, message.text, prompt, thinking_text=self._thinking_text_for(matched_names), tier=tier)
 
         @self.bot.message_handler(content_types=['document', 'photo'])
