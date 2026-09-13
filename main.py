@@ -136,9 +136,13 @@ def main():
         try:
             directory_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_DIRECTORY")), label="내선연락처",
                                              # 내선번호/비상연락처 조회만 하는 봇이라 최신 flash-preview급
-                                             # 성능이 필요 없다. 안정된 기본 flash 모델로 고정하고, 그 모델이
-                                             # 막히면 기존 자동전환으로 나머지 발견된 flash 모델로 넘어간다.
-                                             pinned_flash_model="gemini-2.0-flash")
+                                             # 성능이 필요 없다. gemini-2.0-flash로 직접 고정해봤더니 이 API
+                                             # 키에서는 그 모델명이 아예 404라서, 매 세션 첫 호출마다 전환이
+                                             # 일어나며 세션이 중간에 재생성돼 방금 읽은 KB를 곧바로 다시
+                                             # 읽는 부작용이 있었다. 그래서 존재 여부와 무관하게 이름을
+                                             # 강제하는 대신, 실제로 발견된 flash 모델 중 preview가 아닌
+                                             # 것을 우선하도록 한다(안전하게 항상 존재가 보장됨).
+                                             prefer_stable_flash=True)
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="directory")
             kb_store = KnowledgeStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="directory")
             bot_obj = MemoryGeminiBot("내선/비상연락 너구리", directory_token, directory_router, store,
