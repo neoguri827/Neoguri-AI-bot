@@ -134,7 +134,11 @@ def main():
     directory_token = _get_env_token("TELEGRAM_TOKEN_DIRECTORY")
     if directory_token:
         try:
-            directory_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_DIRECTORY")), label="내선연락처")
+            directory_router = GeminiRouter(genai.Client(api_key=resolve_api_key("GEMINI_API_KEY_DIRECTORY")), label="내선연락처",
+                                             # 내선번호/비상연락처 조회만 하는 봇이라 최신 flash-preview급
+                                             # 성능이 필요 없다. 안정된 기본 flash 모델로 고정하고, 그 모델이
+                                             # 막히면 기존 자동전환으로 나머지 발견된 flash 모델로 넘어간다.
+                                             pinned_flash_model="gemini-2.0-flash")
             store = ChatHistoryStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="directory")
             kb_store = KnowledgeStore(UPSTASH_URL, UPSTASH_TOKEN, namespace="directory")
             bot_obj = MemoryGeminiBot("내선/비상연락 너구리", directory_token, directory_router, store,
@@ -144,7 +148,12 @@ def main():
                                        # 키워드 매칭 발췌(기본 6천자)가 질문 단어와 안 겹치는 부분을
                                        # 놓쳐서 "제대로 못 읽는다"는 문제가 있었다. 연락처 문서 정도
                                        # 크기면 토큰을 더 써도 되니 사실상 항상 전체를 넘기게 크게 잡는다.
-                                       kb_max_chars_per_doc=60000)
+                                       kb_max_chars_per_doc=60000,
+                                       # 질문은 보통 "김상희 연락처"처럼 사람 이름이지 문서 이름
+                                       # ("비상연락망")을 담고 있지 않아서, 이름 매칭에 맡기면 대부분
+                                       # 실패하고 모델이 근거 없이 답을 지어낸다. 문서가 2개뿐이고 작으니
+                                       # 항상 전부 넣는다.
+                                       always_include_all_kb=True)
             t = threading.Thread(target=run_forever, args=(bot_obj, "내선/비상연락 너구리"), daemon=True)
             t.start()
             threads.append(t)

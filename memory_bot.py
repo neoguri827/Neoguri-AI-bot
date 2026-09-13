@@ -81,7 +81,8 @@ class MemoryGeminiBot(TelegramBotBase):
                  session_max_turns: int = SESSION_MAX_TURNS,
                  session_hard_limit_turns: int = SESSION_HARD_LIMIT_TURNS,
                  session_token_soft_limit: int = SESSION_TOKEN_SOFT_LIMIT,
-                 session_token_hard_limit: int = SESSION_TOKEN_HARD_LIMIT):
+                 session_token_hard_limit: int = SESSION_TOKEN_HARD_LIMIT,
+                 always_include_all_kb: bool = False):
         self.name = name
         self.bot = make_telebot(token)
         self.router = router
@@ -102,6 +103,7 @@ class MemoryGeminiBot(TelegramBotBase):
         self.session_hard_limit_turns = session_hard_limit_turns
         self.session_token_soft_limit = session_token_soft_limit
         self.session_token_hard_limit = session_token_hard_limit
+        self.always_include_all_kb = always_include_all_kb
         self.user_sessions: Dict[int, Any] = {}
         self.session_last_used: Dict[int, float] = {}
         self.session_tier: Dict[int, str] = {}
@@ -232,7 +234,13 @@ class MemoryGeminiBot(TelegramBotBase):
         return [name for _, name in scored[:MAX_AUTO_KB_MATCHES]]
 
     def _build_prompt_with_kb(self, chat_id: int, user_text: str) -> Tuple[Union[str, list], List[str]]:
-        matched_names = self._find_relevant_kb(chat_id, user_text)
+        if self.always_include_all_kb and self.knowledge_store:
+            # 이름/키워드 매칭에 기대지 않고 항상 전부 넣는다. 순수 조회용 봇(예: 내선/비상연락처)은
+            # 질문이 "김상희 연락처" 같은 사람 이름이지 문서 이름("비상연락망")을 안 담고 있는 경우가
+            # 대부분이라, 이름 매칭에 의존하면 매번 실패해서 모델이 근거 없이 답을 지어낼 수 있다.
+            matched_names = self.knowledge_store.list_names(chat_id)
+        else:
+            matched_names = self._find_relevant_kb(chat_id, user_text)
         if not matched_names:
             return user_text, []
         # 이번 세션 대화 기록에 이미 붙여 넣은 문서는, 질문에 키워드가 다시 걸려도 재첨부하지 않는다.
