@@ -43,18 +43,32 @@ class GeminiRouter:
 
     MAX_MODEL_SWITCHES_PER_CALL = 6
 
-    def __init__(self, client: genai.Client, label: str = "", pinned_flash_model: str = None):
+    def __init__(self, client: genai.Client, label: str = "", pinned_flash_model: str = None,
+                 prefer_stable_flash: bool = False):
         self.client = client
         self.label = label
         self._lock = threading.Lock()
         flash, pro = self._discover_models()
         self.flash_models = flash or list(self.FALLBACK_FLASH_MODELS)
         self.pro_models = pro or list(self.FALLBACK_PRO_MODELS)
-        if pinned_flash_model:
-            # 단순 조회용 봇처럼 굳이 최신/고성능 flash를 자동으로 고를 필요 없는 경우, 지정한
-            # 기본 모델을 1순위로 강제한다. 그 모델이 나중에 막히면(429/404 등) 기존 자동전환
-            # 로직이 그대로 나머지 발견된 모델로 넘어가므로 안전망은 유지된다.
+        if pinned_flash_model and pinned_flash_model in self.flash_models:
+            # 이 API 키에 실제로 존재가 확인된 모델일 때만 1순위로 강제한다. 목록에 없는 이름을
+            # 강제하면 첫 호출이 100% 404로 실패한 뒤에야 다음 모델로 전환되고, 그 전환 과정에서
+            # 세션이 중간에 재생성되어(등급 전환과 같은 부작용) 방금 읽은 KB 문서를 곧바로 다시
+            # 읽는 문제가 생긴다(실제로 gemini-2.0-flash 고정 시도에서 이 문제가 재현됨).
             self.flash_models = [pinned_flash_model] + [m for m in self.flash_models if m != pinned_flash_model]
+        elif pinned_flash_model:
+            logger.warning(
+                f"[{self.label}] 고정 요청한 모델 {pinned_flash_model}이 발견된 목록에 없어 무시합니다. "
+                f"Flash 1순위는 자동 발견 결과를 그대로 따릅니다."
+            )
+        if prefer_stable_flash:
+            # 굳이 최신/고성능 flash가 필요 없는 단순 조회용 봇은, 발견된 목록 안에서 preview가
+            # 아닌(더 안정적이고 대개 더 저렴한) 모델을 우선한다. 목록에 실제로 있는 것만 재배열
+            # 하므로 존재하지 않는 모델명을 강제하는 것과 달리 404 위험이 없다.
+            stable = [m for m in self.flash_models if "preview" not in m.lower()]
+            preview = [m for m in self.flash_models if "preview" in m.lower()]
+            self.flash_models = stable + preview
         self.flash_index = 0
         self.pro_index = 0
         logger.info(
